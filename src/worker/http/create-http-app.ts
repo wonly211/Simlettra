@@ -133,7 +133,18 @@ export function createHttpApp() {
 
   app.notFound((context) => errorResponse(context, 404, 'not_found', '请求的接口不存在'))
 
-  app.onError((_error, context) => errorResponse(context, 500, 'internal_error', '服务暂时不可用'))
+  app.onError((error, context) => {
+    console.error(
+      JSON.stringify({
+        event: 'http_error',
+        method: context.req.method,
+        path: new URL(context.req.url).pathname,
+        errorName: error instanceof Error ? error.name : 'UnknownError',
+        errorMessage: safeErrorMessage(error),
+      }),
+    )
+    return errorResponse(context, 500, 'internal_error', '服务暂时不可用')
+  })
 
   return app
 }
@@ -231,4 +242,12 @@ function errorResponse(
     },
     status,
   )
+}
+
+function safeErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : '未知运行错误'
+  return message
+    .replace(/[\r\n]+/gu, ' ')
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gu, '[邮箱已隐藏]')
+    .slice(0, 240)
 }

@@ -1,0 +1,35 @@
+export {
+  changeManagedMailDomainStatus,
+  createManagedMailDomain,
+  deleteManagedMailDomain,
+  DomainManagementInputError,
+  DomainManagementPermissionError,
+  listManagedMailDomains,
+  MailDomainConflictError,
+  MailDomainTargetError,
+} from './application/domain-management'
+export {
+  createPersonalAlias,
+  deletePersonalAlias,
+  getAdministratorAliasPolicyOverview,
+  getPersonalAddressOverview,
+  movePersonalAddress,
+  PersonalAddressInputError,
+  PersonalAddressPermissionError,
+  PersonalAddressTargetError,
+  PersonalAliasCreationError,
+  setPersonalDefaultSender,
+  updatePersonalAddressPreference,
+  updateUserAliasPolicy,
+  type PersonalAddressActor,
+} from './application/personal-address-management'
+export {
+  AddressPolicyConflictError,
+  AddressPolicyInputError,
+  AddressPolicyPermissionError,
+  getAddressPolicy,
+  readAddressPolicySnapshot,
+  updateAddressPolicy,
+  validateLocalPartAgainstAddressPolicy,
+  type AddressPolicySnapshot,
+} from './application/address-policy-management'

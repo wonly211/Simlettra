@@ -10,7 +10,7 @@ const args = isWorkersBuild ? ['--仅构建'] : []
 
 if (isWorkersBuild) {
   process.stdout.write(
-    '检测到 Cloudflare Workers Builds，正在用 SIMLETTRA_* 构建变量生成真实部署配置。\n',
+    '检测到 Cloudflare Workers Builds，正在按 Worker 项目名称准备 D1、KV/R2 与 Queue 并生成真实部署配置。\n',
   )
 }
 

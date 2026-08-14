@@ -1,6 +1,8 @@
-export const PASSWORD_FORMAT_VERSION = 1
-export const PASSWORD_ALGORITHM = 'PBKDF2-HMAC-SHA-256'
+export const PASSWORD_FORMAT_VERSION = 2
+export const PASSWORD_ALGORITHM = 'PBKDF2-HMAC-SHA-256-CHAINED'
 export const PASSWORD_ITERATIONS = 900_000
+export const PASSWORD_ITERATIONS_PER_DERIVATION = 100_000
+export const PASSWORD_DERIVATION_ROUNDS = PASSWORD_ITERATIONS / PASSWORD_ITERATIONS_PER_DERIVATION
 export const PASSWORD_BLOCKLIST_VERSION = '2026-08-11-1'
 export const TEMPORARY_PASSWORD_DURATION_MS = 24 * 60 * 60 * 1000
 
@@ -152,25 +154,37 @@ async function derivePassword(
   salt: Uint8Array,
   iterations: number,
 ): Promise<Uint8Array> {
-  const source = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits'],
-  )
-  const derivedBits = await crypto.subtle.deriveBits(
-    {
-      name: 'PBKDF2',
-      hash: 'SHA-256',
-      iterations,
-      salt,
-    },
-    source,
-    256,
-  )
+  if (
+    !Number.isInteger(iterations) ||
+    iterations < 600_000 ||
+    iterations % PASSWORD_ITERATIONS_PER_DERIVATION !== 0
+  ) {
+    throw new Error('不支持的密码派生参数')
+  }
 
-  return new Uint8Array(derivedBits)
+  let input = new TextEncoder().encode(password)
+  const rounds = iterations / PASSWORD_ITERATIONS_PER_DERIVATION
+
+  for (let round = 0; round < rounds; round += 1) {
+    const source = await crypto.subtle.importKey('raw', input, 'PBKDF2', false, ['deriveBits'])
+    const roundSalt = new Uint8Array(salt.length + 4)
+    roundSalt.set(salt)
+    new DataView(roundSalt.buffer).setUint32(salt.length, round, false)
+
+    const derivedBits = await crypto.subtle.deriveBits(
+      {
+        name: 'PBKDF2',
+        hash: 'SHA-256',
+        iterations: PASSWORD_ITERATIONS_PER_DERIVATION,
+        salt: roundSalt,
+      },
+      source,
+      256,
+    )
+    input = new Uint8Array(derivedBits)
+  }
+
+  return input
 }
 
 function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {

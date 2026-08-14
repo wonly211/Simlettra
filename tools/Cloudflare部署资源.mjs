@@ -2,6 +2,7 @@ const RESOURCE_PREFIX = 'simlettra-'
 const RESOURCE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u
 const R2_MAX_NAME_LENGTH = 63
 const QUEUE_MAX_NAME_LENGTH = 63
+const D1_RESERVED_TABLE_NAMES = new Set(['_cf_KV'])
 
 export function createManagedResourceNames(workerName) {
   const normalizedWorkerName = String(workerName ?? '').trim()
@@ -163,6 +164,12 @@ export function createManagedDeploymentConfig({ template, workerName, storageMod
   }
 
   return config
+}
+
+export function filterD1ApplicationTableNames(tableNames) {
+  return tableNames
+    .map((name) => String(name))
+    .filter((name) => !name.startsWith('sqlite_') && !D1_RESERVED_TABLE_NAMES.has(name))
 }
 
 async function ensureListedResource({

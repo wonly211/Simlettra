@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import {
   createManagedDeploymentConfig,
   ensureManagedCloudflareResources,
+  filterD1ApplicationTableNames,
 } from './Cloudflare部署资源.mjs'
 
 const projectDirectory = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -70,7 +71,9 @@ async function assertRemoteDatabaseIsReady(configPath) {
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name;",
     '--json',
   ])
-  const tables = extractRows(result.stdout).map((row) => String(row.name))
+  const tables = filterD1ApplicationTableNames(
+    extractRows(result.stdout).map((row) => String(row.name)),
+  )
 
   if (tables.length === 0) {
     await runNodeTool('远程正式迁移.mjs', ['--config', configPath])

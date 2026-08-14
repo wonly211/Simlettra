@@ -9,7 +9,7 @@
     "pnpm": ">=11.0.0"
   },
   "scripts": {
-    "build": "node tools/安全构建.mjs",
+    "build": "node tools/Cloudflare连接GitHub构建.mjs",
     "check:r2": "wrangler types --config wrangler.jsonc && vue-tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.worker.json && node tools/安全构建.mjs --config wrangler.jsonc && node tools/部署配置自检.mjs --config dist/simlettra/wrangler.json --允许占位编号",
     "check:kv": "wrangler types --config wrangler.kv.jsonc && vue-tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.worker.json && node tools/安全构建.mjs --config wrangler.kv.jsonc && node tools/部署配置自检.mjs --config dist/simlettra_kv/wrangler.json --允许占位编号",
     "check": "pnpm run check:r2 && pnpm run check:kv",

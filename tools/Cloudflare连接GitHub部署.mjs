@@ -19,6 +19,7 @@ const workerName = optionalEnvironment('SIMLETTRA_WORKER_NAME') ?? template.name
 const databaseId = requiredEnvironment('SIMLETTRA_D1_DATABASE_ID')
 const queueName = requiredEnvironment('SIMLETTRA_QUEUE_NAME')
 const generatedConfigOutput = readArgument('--仅生成配置')
+const buildOnly = process.argv.includes('--仅构建')
 const generatedConfigPath = join(
   projectDirectory,
   `wrangler.github.generated.${String(process.pid)}.jsonc`,
@@ -69,7 +70,13 @@ try {
 
     const builtConfigPath = await findBuiltConfig(workerName)
     await runNodeTool('部署配置自检.mjs', ['--config', builtConfigPath])
-    await runWrangler(['deploy', '--config', builtConfigPath])
+    if (buildOnly) {
+      process.stdout.write(
+        'Cloudflare GitHub 构建已完成，真实资源配置已写入构建产物，等待 Wrangler 默认部署命令。\n',
+      )
+    } else {
+      await runWrangler(['deploy', '--config', builtConfigPath])
+    }
   }
 } finally {
   await rm(generatedConfigPath, { force: true })

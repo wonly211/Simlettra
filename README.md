@@ -13,24 +13,27 @@
 
 ## 在 Cloudflare 连接 GitHub
 
-在 Cloudflare 的“创建 Worker”页面连接本仓库，并把部署命令设置为：
+在 Cloudflare 的“创建 Worker”页面连接本仓库。保持 Workers Builds 的默认命令：
 
-```text
-pnpm run deploy:github
-```
+| 项目 | 命令 |
+| --- | --- |
+| 构建命令 | `pnpm run build` |
+| 部署命令 | `npx wrangler deploy` |
 
 构建变量按所选模式填写：
 
 | 名称 | R2 模式 | KV 模式 |
 | --- | --- | --- |
 | `SIMLETTRA_STORAGE_MODE` | `r2` | `kv` |
-| `SIMLETTRA_WORKER_NAME` | Worker 名称 | Worker 名称 |
+| `SIMLETTRA_WORKER_NAME` | Cloudflare 页面实际创建的 Worker 名称 | Cloudflare 页面实际创建的 Worker 名称 |
 | `SIMLETTRA_D1_DATABASE_ID` | D1 编号 | D1 编号 |
 | `SIMLETTRA_QUEUE_NAME` | Queue 名称 | Queue 名称 |
 | `SIMLETTRA_R2_BUCKET_NAME` | R2 存储桶名称 | 不填写 |
 | `SIMLETTRA_KV_NAMESPACE_ID` | 不填写 | KV 命名空间编号 |
 
-部署命令会生成对应资源配置。全新空白 D1 会自动应用全部正式迁移；已有 D1 的迁移账本与当前代码不完全一致时，部署会停止。
+默认构建会生成真实资源配置。缺少变量时会在远程操作前停止；全新空白 D1 会自动应用全部正式迁移；已有 D1 的迁移账本与当前代码不完全一致时，构建会停止。
+
+`pnpm run deploy:github` 仅保留给本地或自定义流水线一次性完成构建和部署，Cloudflare Git 连接不需要改用它。
 
 ## 设置运行变量
 

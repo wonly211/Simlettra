@@ -866,7 +866,7 @@ function closeSettings() {
 }
 
 function toggleMobileNavigation() {
-  if (workspaceView.value !== 'mailbox') openWorkspace('mailbox')
+  if (workspaceView.value === 'settings') openWorkspace('mailbox')
   mobileNavigationOpen.value = !mobileNavigationOpen.value
 }
 
@@ -2089,7 +2089,28 @@ async function confirmUnallocatedClaim() {
   mailboxNotice.value = ''
   try {
     const response = await claimUnallocatedAddress(message.periodId)
-    mailboxNotice.value = `已认领 ${response.data.address}，${response.data.newlyAddedMessageCount} 封历史邮件已加入个人邮箱。`
+    if (personalAddressOverview.value) {
+      const claimedAlias = response.data.claimedAlias
+      const existingIndex = personalAddressOverview.value.addresses.findIndex(
+        (address) => address.id === claimedAlias.id,
+      )
+      const addresses = [...personalAddressOverview.value.addresses]
+      if (existingIndex >= 0) addresses[existingIndex] = claimedAlias
+      else addresses.push(claimedAlias)
+      personalAddressOverview.value = {
+        ...personalAddressOverview.value,
+        addresses,
+        policy: {
+          ...personalAddressOverview.value.policy,
+          aliasUsed: Math.max(
+            personalAddressOverview.value.policy.aliasUsed,
+            addresses.filter((address) => address.role === 'alias').length,
+          ),
+        },
+      }
+      syncAddressPreferenceDrafts(addresses)
+    }
+    mailboxNotice.value = `已认领 ${response.data.address}，已加入个人别名；${response.data.newlyAddedMessageCount} 封历史邮件已加入个人邮箱。`
     closeUnallocatedMessage()
     await Promise.all([
       refreshUnallocatedMail(),
@@ -5451,7 +5472,11 @@ function normalizeDomainPreview(value: string): string {
           <p v-if="accountNotice" class="form-success" role="status">{{ accountNotice }}</p>
         </div>
 
-        <section v-if="workspaceView === 'mailbox'" class="mailbox-workspace" aria-label="收件箱">
+        <section
+          v-if="workspaceView === 'mailbox' || workspaceView === 'drafts'"
+          :class="workspaceView === 'mailbox' ? 'mailbox-workspace' : 'draft-workspace'"
+          aria-label="邮箱工作区"
+        >
           <aside
             class="mailbox-folders"
             :class="{ 'mailbox-folders--open': mobileNavigationOpen }"
@@ -5639,1484 +5664,1505 @@ function normalizeDomainPreview(value: string): string {
             @click="mobileNavigationOpen = false"
           ></button>
 
-          <section
-            class="mailbox-list-panel"
-            :class="{
-              'mailbox-list-panel--selection-mode': mailboxSelectionMode,
-              'mailbox-list-panel--hidden-mobile':
-                selectedMessage ||
-                selectedMessageLoading ||
-                selectedUnallocatedMessage ||
-                selectedUnallocatedMessageLoading,
-            }"
-            aria-labelledby="mailbox-list-title"
-          >
-            <template v-if="mailboxMode === 'assigned'">
-              <form class="mailbox-search" role="search" @submit.prevent="applyMailboxSearch">
-                <div class="mailbox-search-primary">
-                  <Search :size="16" aria-hidden="true" />
-                  <input
-                    ref="mailboxSearchInput"
-                    v-model="mailboxSearchDraft.body"
-                    type="search"
-                    maxlength="200"
-                    aria-label="搜索邮件正文"
-                    placeholder="搜索正文关键词"
-                  />
-                  <div class="mailbox-search-primary-actions">
-                    <button
-                      class="icon-button"
-                      type="submit"
-                      title="搜索"
-                      aria-label="搜索"
-                      :disabled="mailboxLoading"
-                    >
-                      <Search :size="16" />
-                    </button>
-                    <button
-                      class="icon-button mailbox-search-filter-button"
-                      type="button"
-                      title="组合搜索条件"
-                      aria-label="组合搜索条件"
-                      :aria-expanded="mailboxSearchOpen"
-                      @click="mailboxSearchOpen = !mailboxSearchOpen"
-                    >
-                      <SlidersHorizontal :size="16" />
-                      <span v-if="mailboxSearchFilterCount" aria-hidden="true">
-                        {{ mailboxSearchFilterCount }}
-                      </span>
-                    </button>
-                    <button
-                      v-if="mailboxSearchActive"
-                      class="icon-button"
-                      type="button"
-                      title="清除搜索"
-                      aria-label="清除搜索"
-                      :disabled="mailboxLoading"
-                      @click="clearMailboxSearch"
-                    >
-                      <X :size="16" />
-                    </button>
-                  </div>
-                </div>
-
-                <div v-if="mailboxSearchOpen" class="mailbox-search-filters">
-                  <label>
-                    <span>主题</span>
-                    <input v-model="mailboxSearchDraft.subject" type="search" maxlength="320" />
-                  </label>
-                  <label>
-                    <span>发件人</span>
-                    <input v-model="mailboxSearchDraft.sender" type="search" maxlength="320" />
-                  </label>
-                  <label>
-                    <span>收件人</span>
-                    <input v-model="mailboxSearchDraft.recipient" type="search" maxlength="320" />
-                  </label>
-                  <label>
-                    <span>实际投递地址</span>
+          <template v-if="workspaceView === 'mailbox'">
+            <section
+              class="mailbox-list-panel"
+              :class="{
+                'mailbox-list-panel--selection-mode': mailboxSelectionMode,
+                'mailbox-list-panel--hidden-mobile':
+                  selectedMessage ||
+                  selectedMessageLoading ||
+                  selectedUnallocatedMessage ||
+                  selectedUnallocatedMessageLoading,
+              }"
+              aria-labelledby="mailbox-list-title"
+            >
+              <template v-if="mailboxMode === 'assigned'">
+                <form class="mailbox-search" role="search" @submit.prevent="applyMailboxSearch">
+                  <div class="mailbox-search-primary">
+                    <Search :size="16" aria-hidden="true" />
                     <input
-                      v-model="mailboxSearchDraft.mailboxAddress"
+                      ref="mailboxSearchInput"
+                      v-model="mailboxSearchDraft.body"
                       type="search"
-                      maxlength="320"
+                      maxlength="200"
+                      aria-label="搜索邮件正文"
+                      placeholder="搜索正文关键词"
                     />
-                  </label>
-                  <div class="mailbox-search-date-range">
+                    <div class="mailbox-search-primary-actions">
+                      <button
+                        class="icon-button"
+                        type="submit"
+                        title="搜索"
+                        aria-label="搜索"
+                        :disabled="mailboxLoading"
+                      >
+                        <Search :size="16" />
+                      </button>
+                      <button
+                        class="icon-button mailbox-search-filter-button"
+                        type="button"
+                        title="组合搜索条件"
+                        aria-label="组合搜索条件"
+                        :aria-expanded="mailboxSearchOpen"
+                        @click="mailboxSearchOpen = !mailboxSearchOpen"
+                      >
+                        <SlidersHorizontal :size="16" />
+                        <span v-if="mailboxSearchFilterCount" aria-hidden="true">
+                          {{ mailboxSearchFilterCount }}
+                        </span>
+                      </button>
+                      <button
+                        v-if="mailboxSearchActive"
+                        class="icon-button"
+                        type="button"
+                        title="清除搜索"
+                        aria-label="清除搜索"
+                        :disabled="mailboxLoading"
+                        @click="clearMailboxSearch"
+                      >
+                        <X :size="16" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div v-if="mailboxSearchOpen" class="mailbox-search-filters">
                     <label>
-                      <span>开始日期</span>
-                      <input v-model="mailboxSearchDraft.dateFrom" type="date" />
+                      <span>主题</span>
+                      <input v-model="mailboxSearchDraft.subject" type="search" maxlength="320" />
                     </label>
                     <label>
-                      <span>结束日期</span>
-                      <input v-model="mailboxSearchDraft.dateTo" type="date" />
+                      <span>发件人</span>
+                      <input v-model="mailboxSearchDraft.sender" type="search" maxlength="320" />
                     </label>
+                    <label>
+                      <span>收件人</span>
+                      <input v-model="mailboxSearchDraft.recipient" type="search" maxlength="320" />
+                    </label>
+                    <label>
+                      <span>实际投递地址</span>
+                      <input
+                        v-model="mailboxSearchDraft.mailboxAddress"
+                        type="search"
+                        maxlength="320"
+                      />
+                    </label>
+                    <div class="mailbox-search-date-range">
+                      <label>
+                        <span>开始日期</span>
+                        <input v-model="mailboxSearchDraft.dateFrom" type="date" />
+                      </label>
+                      <label>
+                        <span>结束日期</span>
+                        <input v-model="mailboxSearchDraft.dateTo" type="date" />
+                      </label>
+                    </div>
+                    <label>
+                      <span>附件</span>
+                      <select v-model="mailboxSearchDraft.attachment">
+                        <option value="all">不限</option>
+                        <option value="with">有附件</option>
+                        <option value="without">无附件</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>已读状态</span>
+                      <select v-model="mailboxSearchDraft.read">
+                        <option value="all">不限</option>
+                        <option value="unread">未读</option>
+                        <option value="read">已读</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>星标状态</span>
+                      <select v-model="mailboxSearchDraft.starred">
+                        <option value="all">不限</option>
+                        <option value="starred">已星标</option>
+                        <option value="unstarred">未星标</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>归档状态</span>
+                      <select v-model="mailboxSearchDraft.archived">
+                        <option value="all">不限</option>
+                        <option value="archived">已归档</option>
+                        <option value="unarchived">未归档</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>排序</span>
+                      <select v-model="mailboxSearchDraft.sort">
+                        <option value="newest">最新优先</option>
+                        <option value="oldest">最早优先</option>
+                        <option value="unread">未读优先</option>
+                        <option value="starred">星标优先</option>
+                        <option value="attachments">有附件优先</option>
+                      </select>
+                    </label>
+                    <div class="mailbox-search-actions">
+                      <button
+                        class="button button--secondary button--compact"
+                        type="button"
+                        :disabled="mailboxLoading"
+                        @click="clearMailboxSearch"
+                      >
+                        清除
+                      </button>
+                      <button
+                        class="button button--primary button--compact"
+                        type="submit"
+                        :disabled="mailboxLoading"
+                      >
+                        应用条件
+                      </button>
+                    </div>
                   </div>
-                  <label>
-                    <span>附件</span>
-                    <select v-model="mailboxSearchDraft.attachment">
-                      <option value="all">不限</option>
-                      <option value="with">有附件</option>
-                      <option value="without">无附件</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>已读状态</span>
-                    <select v-model="mailboxSearchDraft.read">
-                      <option value="all">不限</option>
-                      <option value="unread">未读</option>
-                      <option value="read">已读</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>星标状态</span>
-                    <select v-model="mailboxSearchDraft.starred">
-                      <option value="all">不限</option>
-                      <option value="starred">已星标</option>
-                      <option value="unstarred">未星标</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>归档状态</span>
-                    <select v-model="mailboxSearchDraft.archived">
-                      <option value="all">不限</option>
-                      <option value="archived">已归档</option>
-                      <option value="unarchived">未归档</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>排序</span>
-                    <select v-model="mailboxSearchDraft.sort">
-                      <option value="newest">最新优先</option>
-                      <option value="oldest">最早优先</option>
-                      <option value="unread">未读优先</option>
-                      <option value="starred">星标优先</option>
-                      <option value="attachments">有附件优先</option>
-                    </select>
-                  </label>
-                  <div class="mailbox-search-actions">
-                    <button
-                      class="button button--secondary button--compact"
-                      type="button"
-                      :disabled="mailboxLoading"
-                      @click="clearMailboxSearch"
-                    >
-                      清除
-                    </button>
-                    <button
-                      class="button button--primary button--compact"
-                      type="submit"
-                      :disabled="mailboxLoading"
-                    >
-                      应用条件
-                    </button>
-                  </div>
-                </div>
-              </form>
-              <div class="mailbox-list-heading">
-                <input
-                  type="checkbox"
-                  :checked="allLoadedMailboxItemsSelected"
-                  :disabled="mailboxItems.length === 0 || mailboxLoading"
-                  aria-label="选择所有已加载邮件"
-                  @change="toggleAllLoadedMailboxItems"
-                />
-                <div>
-                  <h2 id="mailbox-list-title">{{ mailboxViewTitle }}</h2>
-                  <p>{{ mailboxItems.length }} 封已加载</p>
-                </div>
-                <button
-                  class="button button--secondary button--compact mobile-selection-button"
-                  type="button"
-                  @click="toggleMailboxSelectionMode"
-                >
-                  {{ mailboxSelectionMode ? '完成' : '选择' }}
-                </button>
-              </div>
-              <div
-                v-if="selectedMailboxEntryIds.size"
-                class="mailbox-bulk-toolbar"
-                aria-label="批量操作"
-              >
-                <span>{{ selectedMailboxEntryIds.size }} 封</span>
-                <button
-                  class="icon-button"
-                  type="button"
-                  title="标为已读"
-                  aria-label="标为已读"
-                  :disabled="mailboxBulkAction !== null"
-                  @click="runMailboxOrganizeAction('mark_read')"
-                >
-                  <MailOpen :size="17" />
-                </button>
-                <button
-                  class="icon-button"
-                  type="button"
-                  title="标为未读"
-                  aria-label="标为未读"
-                  :disabled="mailboxBulkAction !== null"
-                  @click="runMailboxOrganizeAction('mark_unread')"
-                >
-                  <Mail :size="17" />
-                </button>
-                <button
-                  class="icon-button"
-                  type="button"
-                  :title="mailboxView === 'starred' ? '取消星标' : '添加星标'"
-                  :aria-label="mailboxView === 'starred' ? '取消星标' : '添加星标'"
-                  :disabled="mailboxBulkAction !== null"
-                  @click="runMailboxOrganizeAction(mailboxView === 'starred' ? 'unstar' : 'star')"
-                >
-                  <Star :size="17" :fill="mailboxView === 'starred' ? 'currentColor' : 'none'" />
-                </button>
-                <button
-                  v-if="mailboxView === 'inbox' || mailboxView === 'archive'"
-                  class="icon-button"
-                  type="button"
-                  :title="mailboxView === 'archive' ? '取消归档' : '归档'"
-                  :aria-label="mailboxView === 'archive' ? '取消归档' : '归档'"
-                  :disabled="mailboxBulkAction !== null"
-                  @click="
-                    runMailboxOrganizeAction(mailboxView === 'archive' ? 'unarchive' : 'archive')
-                  "
-                >
-                  <ArchiveRestore v-if="mailboxView === 'archive'" :size="17" />
-                  <Archive v-else :size="17" />
-                </button>
-                <button
-                  v-if="mailboxView === 'inbox' || mailboxView === 'spam'"
-                  class="icon-button"
-                  type="button"
-                  :title="mailboxView === 'spam' ? '不是垃圾邮件' : '标为垃圾邮件'"
-                  :aria-label="mailboxView === 'spam' ? '不是垃圾邮件' : '标为垃圾邮件'"
-                  :disabled="mailboxBulkAction !== null"
-                  @click="
-                    runMailboxOrganizeAction(
-                      mailboxView === 'spam' ? 'restore_from_spam' : 'mark_spam',
-                    )
-                  "
-                >
-                  <Undo2 v-if="mailboxView === 'spam'" :size="17" />
-                  <OctagonAlert v-else :size="17" />
-                </button>
-                <button
-                  class="icon-button"
-                  type="button"
-                  :title="mailboxView === 'trash' ? '恢复' : '移入垃圾箱'"
-                  :aria-label="mailboxView === 'trash' ? '恢复' : '移入垃圾箱'"
-                  :disabled="mailboxBulkAction !== null"
-                  @click="
-                    runMailboxOrganizeAction(
-                      mailboxView === 'trash' ? 'restore_from_trash' : 'move_to_trash',
-                    )
-                  "
-                >
-                  <Undo2 v-if="mailboxView === 'trash'" :size="17" />
-                  <Trash2 v-else :size="17" />
-                </button>
-              </div>
-              <p v-if="mailboxError" class="mailbox-error" role="alert">{{ mailboxError }}</p>
-              <p v-if="mailboxNotice" class="mailbox-notice" role="status">{{ mailboxNotice }}</p>
-              <p v-if="mailboxLoading" class="mailbox-loading" role="status">正在读取邮件…</p>
-              <p
-                v-else-if="mailboxSearchIndex?.status === 'building'"
-                class="mailbox-search-status"
-                role="status"
-              >
-                正在建立正文搜索索引，尚有
-                {{ mailboxSearchIndex.pendingMessageCount }} 封邮件未完成。
-              </p>
-              <p
-                v-else-if="mailboxSearchIndex?.status === 'needs_attention'"
-                class="mailbox-search-status mailbox-search-status--attention"
-                role="alert"
-              >
-                正文搜索索引需要管理员处理，普通筛选仍可使用。
-              </p>
-              <div v-else-if="mailboxItems.length" class="mailbox-message-list">
-                <article
-                  v-for="item in mailboxItems"
-                  :key="item.id"
-                  class="mailbox-message-row"
-                  :class="{
-                    'mailbox-message-row--unread': !item.isRead,
-                    'mailbox-message-row--selected': selectedMessage?.id === item.id,
-                    'mailbox-message-row--checked': selectedMailboxEntryIds.has(item.id),
-                  }"
-                >
+                </form>
+                <div class="mailbox-list-heading">
                   <input
                     type="checkbox"
-                    :checked="selectedMailboxEntryIds.has(item.id)"
-                    :aria-label="`选择邮件：${item.subject || '无主题'}`"
-                    @change="toggleMailboxSelection(item.id)"
+                    :checked="allLoadedMailboxItemsSelected"
+                    :disabled="mailboxItems.length === 0 || mailboxLoading"
+                    aria-label="选择所有已加载邮件"
+                    @change="toggleAllLoadedMailboxItems"
                   />
-                  <button
-                    class="mailbox-message-open"
-                    type="button"
-                    @click="openMailboxMessage(item)"
-                  >
-                    <span class="mailbox-message-main">
-                      <span class="mailbox-message-sender">{{ mailboxSenderLabel(item) }}</span>
-                      <span class="mailbox-message-subject">{{
-                        item.subject || '（无主题）'
-                      }}</span>
-                      <span class="mailbox-message-delivery">
-                        {{ mailboxScopeLabel(item) }} ·
-                        {{ item.actualDeliveryAddresses.join('、') || '投递地址未知' }}
-                      </span>
-                    </span>
-                    <span class="mailbox-message-meta">
-                      <time :datetime="new Date(item.occurredAt).toISOString()">{{
-                        formatDate(item.occurredAt)
-                      }}</time>
-                      <span v-if="item.conversationMessageCount > 1">
-                        {{ item.conversationMessageCount }} 封
-                        <template v-if="item.conversationUnreadCount > 0">
-                          · {{ item.conversationUnreadCount }} 封未读
-                        </template>
-                      </span>
-                      <span v-if="item.hasAttachments" class="mailbox-attachment-count">
-                        <Paperclip :size="13" />
-                        {{ item.attachmentCount }}
-                      </span>
-                      <span v-if="item.trashDueAt">{{
-                        mailboxTrashDueLabel(item.trashDueAt)
-                      }}</span>
-                    </span>
-                  </button>
-                  <button
-                    class="icon-button mailbox-row-star"
-                    type="button"
-                    :title="item.isStarred ? '取消星标' : '添加星标'"
-                    :aria-label="item.isStarred ? '取消星标' : '添加星标'"
-                    :disabled="mailboxBulkAction !== null"
-                    @click="runMailboxOrganizeAction(item.isStarred ? 'unstar' : 'star', [item.id])"
-                  >
-                    <Star :size="16" :fill="item.isStarred ? 'currentColor' : 'none'" />
-                  </button>
-                </article>
-                <button
-                  v-if="mailboxNextCursor"
-                  class="button button--secondary mailbox-load-more"
-                  type="button"
-                  :disabled="mailboxLoadingMore"
-                  @click="refreshMailbox(true)"
-                >
-                  {{ mailboxLoadingMore ? '正在加载' : '加载更多' }}
-                </button>
-              </div>
-              <p v-else class="empty-state">{{ mailboxEmptyLabel(mailboxView) }}</p>
-            </template>
-
-            <template v-else>
-              <form
-                class="mailbox-search"
-                role="search"
-                @submit.prevent="applyUnallocatedMailSearch"
-              >
-                <div class="mailbox-search-primary">
-                  <Search :size="16" aria-hidden="true" />
-                  <input
-                    v-model="unallocatedMailQuery"
-                    type="search"
-                    maxlength="320"
-                    aria-label="搜索未分配来信"
-                    placeholder="搜索主题、发件人或投递地址"
-                  />
-                  <div class="mailbox-search-primary-actions">
-                    <button
-                      class="icon-button"
-                      type="submit"
-                      title="搜索"
-                      aria-label="搜索"
-                      :disabled="unallocatedMailLoading"
-                    >
-                      <Search :size="16" />
-                    </button>
-                    <button
-                      v-if="unallocatedMailAppliedQuery"
-                      class="icon-button"
-                      type="button"
-                      title="清除搜索"
-                      aria-label="清除搜索"
-                      :disabled="unallocatedMailLoading"
-                      @click="clearUnallocatedMailSearch"
-                    >
-                      <X :size="16" />
-                    </button>
+                  <div>
+                    <h2 id="mailbox-list-title">{{ mailboxViewTitle }}</h2>
+                    <p>{{ mailboxItems.length }} 封已加载</p>
                   </div>
+                  <button
+                    class="button button--secondary button--compact mobile-selection-button"
+                    type="button"
+                    @click="toggleMailboxSelectionMode"
+                  >
+                    {{ mailboxSelectionMode ? '完成' : '选择' }}
+                  </button>
                 </div>
-              </form>
-              <div class="mailbox-list-heading mailbox-list-heading--plain">
-                <div>
-                  <h2 id="mailbox-list-title">未分配来信</h2>
-                  <p>{{ unallocatedMailItems.length }} 封已加载</p>
-                </div>
-              </div>
-              <p v-if="mailboxError" class="mailbox-error" role="alert">{{ mailboxError }}</p>
-              <p v-if="mailboxNotice" class="mailbox-notice" role="status">{{ mailboxNotice }}</p>
-              <p v-if="unallocatedMailLoading" class="mailbox-loading" role="status">
-                正在读取未分配来信…
-              </p>
-              <div v-else-if="unallocatedMailItems.length" class="mailbox-message-list">
-                <article
-                  v-for="item in unallocatedMailItems"
-                  :key="item.deliveryId"
-                  class="mailbox-message-row mailbox-message-row--unallocated"
-                  :class="{
-                    'mailbox-message-row--selected':
-                      selectedUnallocatedMessage?.deliveryId === item.deliveryId,
-                  }"
+                <div
+                  v-if="selectedMailboxEntryIds.size"
+                  class="mailbox-bulk-toolbar"
+                  aria-label="批量操作"
                 >
+                  <span>{{ selectedMailboxEntryIds.size }} 封</span>
                   <button
-                    class="mailbox-message-open"
+                    class="icon-button"
                     type="button"
-                    @click="openUnallocatedMessage(item)"
+                    title="标为已读"
+                    aria-label="标为已读"
+                    :disabled="mailboxBulkAction !== null"
+                    @click="runMailboxOrganizeAction('mark_read')"
                   >
-                    <span class="mailbox-message-main">
-                      <span class="mailbox-message-sender">{{ unallocatedSenderLabel(item) }}</span>
-                      <span class="mailbox-message-subject">{{
-                        item.subject || '（无主题）'
-                      }}</span>
-                      <span class="mailbox-message-delivery">{{ item.actualDeliveryAddress }}</span>
-                    </span>
-                    <span class="mailbox-message-meta">
-                      <time :datetime="new Date(item.occurredAt).toISOString()">
-                        {{ formatDate(item.occurredAt) }}
-                      </time>
-                      <span v-if="item.hasAttachments" class="mailbox-attachment-count">
-                        <Paperclip :size="13" />
-                        {{ item.attachmentCount }}
-                      </span>
-                    </span>
-                  </button>
-                </article>
-                <button
-                  v-if="unallocatedMailNextCursor"
-                  class="button button--secondary mailbox-load-more"
-                  type="button"
-                  :disabled="unallocatedMailLoadingMore"
-                  @click="refreshUnallocatedMail(true)"
-                >
-                  {{ unallocatedMailLoadingMore ? '正在加载' : '加载更多' }}
-                </button>
-              </div>
-              <p v-else class="empty-state">
-                {{
-                  unallocatedMailAppliedQuery
-                    ? '没有符合条件的未分配来信。'
-                    : '当前没有未分配来信。'
-                }}
-              </p>
-            </template>
-          </section>
-
-          <article
-            ref="mailboxDetailPanel"
-            class="mailbox-detail-panel"
-            :class="{
-              'mailbox-detail-panel--visible-mobile':
-                selectedMessage ||
-                selectedMessageLoading ||
-                selectedUnallocatedMessage ||
-                selectedUnallocatedMessageLoading,
-            }"
-            aria-label="邮件详情"
-          >
-            <p
-              v-if="selectedMessageLoading || selectedUnallocatedMessageLoading"
-              class="mailbox-loading"
-            >
-              正在打开邮件…
-            </p>
-            <template v-else-if="mailboxMode === 'assigned' && selectedMessage">
-              <div class="mailbox-detail-toolbar">
-                <button
-                  class="button button--secondary button--compact mailbox-back-button"
-                  type="button"
-                  @click="requestCloseMailboxMessage"
-                >
-                  <ArrowLeft :size="16" />
-                  返回
-                </button>
-                <div class="mailbox-detail-actions">
-                  <button
-                    v-if="selectedMessage.entryKind === 'received'"
-                    class="button button--primary button--compact"
-                    type="button"
-                    title="回复"
-                    aria-label="回复"
-                    :disabled="selectedMessageAction !== null || mailboxBulkAction !== null"
-                    @click="startRelatedDraft('reply')"
-                  >
-                    <Reply :size="17" />
-                    <span>回复</span>
-                  </button>
-                  <button
-                    v-if="selectedMessage.entryKind === 'received'"
-                    class="button button--secondary button--compact"
-                    type="button"
-                    title="回复全部"
-                    aria-label="回复全部"
-                    :disabled="selectedMessageAction !== null || mailboxBulkAction !== null"
-                    @click="startRelatedDraft('reply_all')"
-                  >
-                    <ReplyAll :size="17" />
-                    <span>回复全部</span>
-                  </button>
-                  <button
-                    v-if="messageActionsOpen"
-                    class="icon-button mailbox-secondary-action"
-                    type="button"
-                    title="转发"
-                    aria-label="转发"
-                    :disabled="selectedMessageAction !== null || mailboxBulkAction !== null"
-                    @click="startRelatedDraft('forward')"
-                  >
-                    <Forward :size="17" />
-                  </button>
-                  <button
-                    v-if="messageActionsOpen"
-                    class="button button--secondary button--compact mailbox-secondary-action"
-                    type="button"
-                    :disabled="selectedMessageAction !== null || mailboxBulkAction !== null"
-                    @click="toggleSelectedMessageRead"
-                  >
-                    <Mail v-if="selectedMessage.isRead" :size="16" />
-                    <MailOpen v-else :size="16" />
-                    {{ selectedMessage.isRead ? '标为未读' : '标为已读' }}
+                    <MailOpen :size="17" />
                   </button>
                   <button
                     class="icon-button"
                     type="button"
-                    :title="selectedMessage.isStarred ? '取消星标' : '添加星标'"
-                    :aria-label="selectedMessage.isStarred ? '取消星标' : '添加星标'"
+                    title="标为未读"
+                    aria-label="标为未读"
                     :disabled="mailboxBulkAction !== null"
-                    @click="
-                      runMailboxOrganizeAction(selectedMessage.isStarred ? 'unstar' : 'star', [
-                        selectedMessage.id,
-                      ])
-                    "
+                    @click="runMailboxOrganizeAction('mark_unread')"
                   >
-                    <Star :size="17" :fill="selectedMessage.isStarred ? 'currentColor' : 'none'" />
+                    <Mail :size="17" />
                   </button>
                   <button
-                    class="icon-button mailbox-more-actions-button"
+                    class="icon-button"
                     type="button"
-                    title="更多操作"
-                    aria-label="更多操作"
-                    :aria-expanded="messageActionsOpen"
-                    @click="messageActionsOpen = !messageActionsOpen"
+                    :title="mailboxView === 'starred' ? '取消星标' : '添加星标'"
+                    :aria-label="mailboxView === 'starred' ? '取消星标' : '添加星标'"
+                    :disabled="mailboxBulkAction !== null"
+                    @click="runMailboxOrganizeAction(mailboxView === 'starred' ? 'unstar' : 'star')"
                   >
-                    <MoreHorizontal :size="18" />
+                    <Star :size="17" :fill="mailboxView === 'starred' ? 'currentColor' : 'none'" />
                   </button>
                   <button
-                    v-if="
-                      messageActionsOpen &&
-                      selectedMessage.entryKind === 'received' &&
-                      selectedMessage.location === 'inbox'
-                    "
-                    class="icon-button mailbox-secondary-action"
+                    v-if="mailboxView === 'inbox' || mailboxView === 'archive'"
+                    class="icon-button"
                     type="button"
-                    :title="selectedMessage.isArchived ? '取消归档' : '归档'"
-                    :aria-label="selectedMessage.isArchived ? '取消归档' : '归档'"
+                    :title="mailboxView === 'archive' ? '取消归档' : '归档'"
+                    :aria-label="mailboxView === 'archive' ? '取消归档' : '归档'"
                     :disabled="mailboxBulkAction !== null"
                     @click="
-                      runMailboxOrganizeAction(
-                        selectedMessage.isArchived ? 'unarchive' : 'archive',
-                        [selectedMessage.id],
-                      )
+                      runMailboxOrganizeAction(mailboxView === 'archive' ? 'unarchive' : 'archive')
                     "
                   >
-                    <ArchiveRestore v-if="selectedMessage.isArchived" :size="17" />
+                    <ArchiveRestore v-if="mailboxView === 'archive'" :size="17" />
                     <Archive v-else :size="17" />
                   </button>
                   <button
-                    v-if="
-                      messageActionsOpen &&
-                      selectedMessage.entryKind === 'received' &&
-                      selectedMessage.location === 'inbox'
-                    "
-                    class="icon-button mailbox-secondary-action"
+                    v-if="mailboxView === 'inbox' || mailboxView === 'spam'"
+                    class="icon-button"
                     type="button"
-                    title="标为垃圾邮件"
-                    aria-label="标为垃圾邮件"
-                    :disabled="mailboxBulkAction !== null"
-                    @click="runMailboxOrganizeAction('mark_spam', [selectedMessage.id])"
-                  >
-                    <OctagonAlert :size="17" />
-                  </button>
-                  <button
-                    v-if="messageActionsOpen && selectedMessage.location === 'spam'"
-                    class="icon-button mailbox-secondary-action"
-                    type="button"
-                    title="不是垃圾邮件"
-                    aria-label="不是垃圾邮件"
-                    :disabled="mailboxBulkAction !== null"
-                    @click="runMailboxOrganizeAction('restore_from_spam', [selectedMessage.id])"
-                  >
-                    <Undo2 :size="17" />
-                  </button>
-                  <button
-                    v-if="messageActionsOpen"
-                    class="icon-button mailbox-secondary-action"
-                    type="button"
-                    :title="selectedMessage.location === 'trash' ? '恢复' : '移入垃圾箱'"
-                    :aria-label="selectedMessage.location === 'trash' ? '恢复' : '移入垃圾箱'"
+                    :title="mailboxView === 'spam' ? '不是垃圾邮件' : '标为垃圾邮件'"
+                    :aria-label="mailboxView === 'spam' ? '不是垃圾邮件' : '标为垃圾邮件'"
                     :disabled="mailboxBulkAction !== null"
                     @click="
                       runMailboxOrganizeAction(
-                        selectedMessage.location === 'trash'
-                          ? 'restore_from_trash'
-                          : 'move_to_trash',
-                        [selectedMessage.id],
+                        mailboxView === 'spam' ? 'restore_from_spam' : 'mark_spam',
                       )
                     "
                   >
-                    <Undo2 v-if="selectedMessage.location === 'trash'" :size="17" />
-                    <Trash2 v-else :size="17" />
+                    <Undo2 v-if="mailboxView === 'spam'" :size="17" />
+                    <OctagonAlert v-else :size="17" />
                   </button>
                   <button
-                    v-if="
-                      messageActionsOpen &&
-                      selectedMessage.location === 'trash' &&
-                      selectedMessage.canPermanentlyDelete
-                    "
-                    class="button button--danger-quiet button--compact mailbox-secondary-action"
-                    type="button"
-                    :disabled="selectedMessageAction !== null || mailboxBulkAction !== null"
-                    @click="requestMailboxPermanentDeletion"
-                  >
-                    <Trash2 :size="16" />
-                    永久删除
-                  </button>
-                </div>
-              </div>
-
-              <section
-                v-if="pendingMailboxPermanentDeletion"
-                class="destructive-confirmation mailbox-delete-confirmation"
-                aria-labelledby="mailbox-permanent-deletion-title"
-              >
-                <h2 id="mailbox-permanent-deletion-title">
-                  {{
-                    pendingMailboxPermanentDeletion.mailboxType === 'organization'
-                      ? '为组织永久删除邮件'
-                      : '永久删除个人邮件'
-                  }}
-                </h2>
-                <p>{{ mailboxPermanentDeletionImpactText() }}</p>
-                <label class="checkbox-field">
-                  <input v-model="mailboxPermanentDeletionConfirmed" type="checkbox" />
-                  <span>
-                    {{
-                      pendingMailboxPermanentDeletion.mailboxType === 'organization'
-                        ? '我确认所有组织成员都将失去这封邮件'
-                        : '我确认永久删除这封个人邮件'
-                    }}
-                  </span>
-                </label>
-                <div class="confirmation-actions">
-                  <button
-                    class="button button--secondary button--compact"
-                    type="button"
-                    :disabled="selectedMessageAction !== null"
-                    @click="cancelMailboxPermanentDeletion"
-                  >
-                    取消
-                  </button>
-                  <button
-                    class="button button--danger-quiet button--compact"
-                    type="button"
-                    :disabled="!mailboxPermanentDeletionConfirmed || selectedMessageAction !== null"
-                    @click="confirmMailboxPermanentDeletion"
-                  >
-                    {{ selectedMessageAction === 'permanent-delete' ? '正在删除' : '永久删除' }}
-                  </button>
-                </div>
-              </section>
-
-              <nav
-                v-if="selectedConversationEntries.length > 1"
-                class="mailbox-conversation-timeline"
-                aria-label="会话邮件"
-              >
-                <button
-                  v-for="entry in selectedConversationEntries"
-                  :key="entry.id"
-                  type="button"
-                  :class="{
-                    'mailbox-conversation-entry--active': entry.id === selectedMessage.id,
-                    'mailbox-conversation-entry--unread': !entry.isRead,
-                  }"
-                  :aria-current="entry.id === selectedMessage.id ? 'true' : undefined"
-                  @click="openMailboxMessage(entry)"
-                >
-                  <span>{{
-                    entry.sender?.displayName || entry.sender?.address || '未知发件人'
-                  }}</span>
-                  <time :datetime="new Date(entry.occurredAt).toISOString()">
-                    {{ formatDate(entry.occurredAt) }}
-                  </time>
-                  <Paperclip v-if="entry.hasAttachments" :size="13" />
-                </button>
-              </nav>
-
-              <header class="mailbox-detail-header">
-                <p class="mailbox-detail-scope">
-                  {{ selectedMessage.organization?.name ?? '个人邮箱' }}
-                </p>
-                <p v-if="selectedMessage.trashDueAt" class="mailbox-trash-due">
-                  {{ mailboxTrashDueLabel(selectedMessage.trashDueAt) }}
-                </p>
-                <p
-                  v-if="
-                    selectedMessage.location === 'trash' &&
-                    selectedMessage.mailboxType === 'organization' &&
-                    !selectedMessage.canPermanentlyDelete
-                  "
-                  class="mailbox-trash-permission"
-                >
-                  只有组织创建者可以为整个组织永久删除这封邮件。
-                </p>
-                <h2 ref="mailboxDetailHeading" tabindex="-1">
-                  {{ selectedMessage.subject || '（无主题）' }}
-                </h2>
-                <dl class="mailbox-header-addresses">
-                  <div
-                    v-for="(address, index) in selectedMessage.addresses"
-                    :key="`${address.role}-${index}`"
-                  >
-                    <dt>{{ headerRoleLabel(address.role) }}</dt>
-                    <dd>
-                      <strong v-if="address.displayName">{{ address.displayName }}</strong>
-                      <span>{{ address.address }}</span>
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>实际投递</dt>
-                    <dd>{{ selectedMessage.actualDeliveryAddresses.join('、') }}</dd>
-                  </div>
-                  <div>
-                    <dt>时间</dt>
-                    <dd>
-                      {{ formatDate(selectedMessage.headerDateAt ?? selectedMessage.acceptedAt) }}
-                    </dd>
-                  </div>
-                </dl>
-              </header>
-
-              <div
-                v-if="selectedMessage.untrustedHtmlBody && !selectedMessage.remoteImagesAllowed"
-                class="remote-image-notice"
-              >
-                <span>远程图片已阻止。</span>
-                <button
-                  type="button"
-                  :disabled="selectedMessageAction !== null"
-                  @click="changeRemoteImagePermission('message')"
-                >
-                  仅本封显示
-                </button>
-                <button
-                  v-if="selectedMessage.trustedSenderAddress"
-                  type="button"
-                  :disabled="selectedMessageAction !== null"
-                  @click="removeSelectedTrustedSender"
-                >
-                  取消信任此发件人
-                </button>
-                <button
-                  v-else-if="selectedMessageSender"
-                  type="button"
-                  :disabled="selectedMessageAction !== null"
-                  @click="changeRemoteImagePermission('sender')"
-                >
-                  信任此发件人
-                </button>
-              </div>
-              <div
-                v-else-if="selectedMessage.untrustedHtmlBody && selectedMessage.remoteImagesAllowed"
-                class="remote-image-notice remote-image-notice--allowed"
-              >
-                <span>
-                  {{
-                    selectedMessage.remoteImagePermission === 'sender'
-                      ? '已信任此发件人的远程图片。'
-                      : '已为本封邮件显示远程图片。'
-                  }}
-                </span>
-                <button
-                  v-if="selectedMessage.trustedSenderAddress"
-                  type="button"
-                  :disabled="selectedMessageAction !== null"
-                  @click="removeSelectedTrustedSender"
-                >
-                  取消信任
-                </button>
-                <button
-                  v-else
-                  type="button"
-                  :disabled="selectedMessageAction !== null"
-                  @click="changeRemoteImagePermission('block')"
-                >
-                  重新阻止
-                </button>
-              </div>
-
-              <div
-                v-if="selectedMessage.untrustedHtmlBody && selectedMessage.plainTextBody !== null"
-                class="message-body-tabs"
-                role="group"
-                aria-label="正文格式"
-              >
-                <button
-                  type="button"
-                  :aria-pressed="selectedMessageBodyMode === 'html'"
-                  @click="selectedMessageBodyMode = 'html'"
-                >
-                  HTML
-                </button>
-                <button
-                  type="button"
-                  :aria-pressed="selectedMessageBodyMode === 'plain'"
-                  @click="selectedMessageBodyMode = 'plain'"
-                >
-                  纯文本
-                </button>
-              </div>
-
-              <iframe
-                v-if="selectedMessage.untrustedHtmlBody && selectedMessageBodyMode === 'html'"
-                class="safe-mail-frame"
-                title="邮件 HTML 正文"
-                sandbox="allow-popups allow-popups-to-escape-sandbox"
-                :srcdoc="safeSelectedMessageHtml"
-              />
-              <pre v-else class="plain-mail-body">{{ selectedMessage.plainTextBody ?? '' }}</pre>
-
-              <section v-if="selectedMessage.attachments.length" class="mailbox-attachments">
-                <h3>附件</h3>
-                <article
-                  v-for="attachment in selectedMessage.attachments"
-                  :key="attachment.id"
-                  class="mailbox-attachment-row"
-                >
-                  <div>
-                    <strong>{{ attachment.fileName }}</strong>
-                    <span
-                      >{{ attachment.mediaType }} · {{ formatFileSize(attachment.sizeBytes) }}</span
-                    >
-                  </div>
-                  <div class="mailbox-attachment-actions">
-                    <button
-                      v-if="attachment.previewable"
-                      class="button button--secondary button--compact"
-                      type="button"
-                      @click="
-                        previewAttachmentId =
-                          previewAttachmentId === attachment.id ? null : attachment.id
-                      "
-                    >
-                      {{ previewAttachmentId === attachment.id ? '关闭预览' : '预览' }}
-                    </button>
-                    <a
-                      class="button button--secondary button--compact"
-                      :href="attachmentUrl(selectedMessage.id, attachment.id)"
-                    >
-                      下载
-                    </a>
-                  </div>
-                  <img
-                    v-if="attachment.previewable && previewAttachmentId === attachment.id"
-                    class="mailbox-attachment-preview"
-                    :src="attachmentUrl(selectedMessage.id, attachment.id, true)"
-                    :alt="attachment.fileName"
-                  />
-                </article>
-              </section>
-            </template>
-            <template v-else-if="mailboxMode === 'unallocated' && selectedUnallocatedMessage">
-              <div class="mailbox-detail-toolbar">
-                <button
-                  class="button button--secondary button--compact mailbox-back-button"
-                  type="button"
-                  @click="requestCloseUnallocatedMessage"
-                >
-                  <ArrowLeft :size="16" />
-                  返回
-                </button>
-                <div class="mailbox-detail-actions">
-                  <button
-                    class="button button--primary button--compact"
-                    type="button"
-                    :disabled="unallocatedMailAction !== null"
-                    @click="requestUnallocatedClaim"
-                  >
-                    {{ unallocatedMailAction === 'claim' ? '正在认领' : '认领地址' }}
-                  </button>
-                </div>
-              </div>
-
-              <section
-                v-if="pendingUnallocatedClaim"
-                class="destructive-confirmation mailbox-delete-confirmation"
-                aria-labelledby="unallocated-claim-title"
-              >
-                <h2 id="unallocated-claim-title">认领未分配地址</h2>
-                <p>
-                  将把 <strong>{{ pendingUnallocatedClaim.actualDeliveryAddress }}</strong>
-                  建立为你的个人别名，并把这个地址当前未分配时期的全部历史来信加入个人邮箱。操作会占用个人别名和逻辑存储额度。
-                </p>
-                <label class="checkbox-field">
-                  <input v-model="unallocatedClaimConfirmed" type="checkbox" />
-                  <span>我确认认领这个地址及其当前历史来信</span>
-                </label>
-                <div class="confirmation-actions">
-                  <button
-                    class="button button--secondary button--compact"
-                    type="button"
-                    :disabled="unallocatedMailAction !== null"
-                    @click="cancelUnallocatedClaim"
-                  >
-                    取消
-                  </button>
-                  <button
-                    class="button button--primary button--compact"
-                    type="button"
-                    :disabled="!unallocatedClaimConfirmed || unallocatedMailAction !== null"
-                    @click="confirmUnallocatedClaim"
-                  >
-                    {{ unallocatedMailAction === 'claim' ? '正在认领' : '确认认领' }}
-                  </button>
-                </div>
-              </section>
-
-              <header class="mailbox-detail-header">
-                <p class="mailbox-detail-scope">未分配来信</p>
-                <h2 ref="mailboxDetailHeading" tabindex="-1">
-                  {{ selectedUnallocatedMessage.subject || '（无主题）' }}
-                </h2>
-                <dl class="mailbox-header-addresses">
-                  <div
-                    v-for="(address, index) in selectedUnallocatedMessage.addresses"
-                    :key="`${address.role}-${index}`"
-                  >
-                    <dt>{{ headerRoleLabel(address.role) }}</dt>
-                    <dd>
-                      <strong v-if="address.displayName">{{ address.displayName }}</strong>
-                      <span>{{ address.address }}</span>
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>实际投递</dt>
-                    <dd>{{ selectedUnallocatedMessage.actualDeliveryAddress }}</dd>
-                  </div>
-                  <div>
-                    <dt>时间</dt>
-                    <dd>
-                      {{
-                        formatDate(
-                          selectedUnallocatedMessage.headerDateAt ??
-                            selectedUnallocatedMessage.acceptedAt,
-                        )
-                      }}
-                    </dd>
-                  </div>
-                </dl>
-              </header>
-
-              <div v-if="selectedUnallocatedMessage.untrustedHtmlBody" class="remote-image-notice">
-                <span>远程图片已阻止；认领前不能放行。</span>
-              </div>
-
-              <div
-                v-if="
-                  selectedUnallocatedMessage.untrustedHtmlBody &&
-                  selectedUnallocatedMessage.plainTextBody !== null
-                "
-                class="message-body-tabs"
-                role="group"
-                aria-label="正文格式"
-              >
-                <button
-                  type="button"
-                  :aria-pressed="selectedMessageBodyMode === 'html'"
-                  @click="selectedMessageBodyMode = 'html'"
-                >
-                  HTML
-                </button>
-                <button
-                  type="button"
-                  :aria-pressed="selectedMessageBodyMode === 'plain'"
-                  @click="selectedMessageBodyMode = 'plain'"
-                >
-                  纯文本
-                </button>
-              </div>
-
-              <iframe
-                v-if="
-                  selectedUnallocatedMessage.untrustedHtmlBody && selectedMessageBodyMode === 'html'
-                "
-                class="safe-mail-frame"
-                title="未分配邮件 HTML 正文"
-                sandbox="allow-popups allow-popups-to-escape-sandbox"
-                :srcdoc="safeSelectedUnallocatedMessageHtml"
-              />
-              <pre v-else class="plain-mail-body">{{
-                selectedUnallocatedMessage.plainTextBody ?? ''
-              }}</pre>
-
-              <section
-                v-if="selectedUnallocatedMessage.attachments.length"
-                class="mailbox-attachments"
-              >
-                <h3>附件</h3>
-                <article
-                  v-for="attachment in selectedUnallocatedMessage.attachments"
-                  :key="attachment.id"
-                  class="mailbox-attachment-row"
-                >
-                  <div>
-                    <strong>{{ attachment.fileName }}</strong>
-                    <span
-                      >{{ attachment.mediaType }} · {{ formatFileSize(attachment.sizeBytes) }}</span
-                    >
-                  </div>
-                  <div class="mailbox-attachment-actions">
-                    <button
-                      v-if="attachment.previewable"
-                      class="button button--secondary button--compact"
-                      type="button"
-                      @click="
-                        previewAttachmentId =
-                          previewAttachmentId === attachment.id ? null : attachment.id
-                      "
-                    >
-                      {{ previewAttachmentId === attachment.id ? '关闭预览' : '预览' }}
-                    </button>
-                    <a
-                      class="button button--secondary button--compact"
-                      :href="
-                        unallocatedAttachmentUrl(
-                          selectedUnallocatedMessage.deliveryId,
-                          attachment.id,
-                        )
-                      "
-                    >
-                      下载
-                    </a>
-                  </div>
-                  <img
-                    v-if="attachment.previewable && previewAttachmentId === attachment.id"
-                    class="mailbox-attachment-preview"
-                    :src="
-                      unallocatedAttachmentUrl(
-                        selectedUnallocatedMessage.deliveryId,
-                        attachment.id,
-                        true,
-                      )
-                    "
-                    :alt="attachment.fileName"
-                  />
-                </article>
-              </section>
-            </template>
-            <div v-else class="mailbox-detail-placeholder">
-              <h2>选择一封邮件</h2>
-              <p>邮件正文和附件将在这里显示。</p>
-            </div>
-          </article>
-        </section>
-
-        <section v-else-if="workspaceView === 'drafts'" class="draft-workspace" aria-label="草稿箱">
-          <aside
-            class="draft-list-panel"
-            :class="{ 'draft-list-panel--hidden-mobile': selectedDraft }"
-          >
-            <header class="draft-list-header">
-              <div>
-                <h2>{{ draftListStatus === 'active' ? '草稿箱' : '已丢弃草稿' }}</h2>
-                <p>{{ draftWorkspace?.drafts.length ?? 0 }} 封</p>
-              </div>
-              <div class="draft-list-actions">
-                <button
-                  class="icon-button"
-                  type="button"
-                  title="新建草稿"
-                  aria-label="新建草稿"
-                  :disabled="draftAction !== null"
-                  @click="startNewDraft"
-                >
-                  <PenLine :size="17" />
-                </button>
-                <button
-                  class="icon-button"
-                  type="button"
-                  title="刷新草稿"
-                  aria-label="刷新草稿"
-                  :disabled="draftLoading"
-                  @click="refreshDrafts"
-                >
-                  <RefreshCw :size="17" />
-                </button>
-              </div>
-            </header>
-            <div class="draft-status-tabs" role="group" aria-label="草稿状态">
-              <button
-                type="button"
-                :aria-pressed="draftListStatus === 'active'"
-                @click="enterDraftWorkspace('active')"
-              >
-                草稿
-              </button>
-              <button
-                type="button"
-                :aria-pressed="draftListStatus === 'trashed'"
-                @click="enterDraftWorkspace('trashed')"
-              >
-                已丢弃
-              </button>
-            </div>
-            <p v-if="draftError" class="mailbox-error" role="alert">{{ draftError }}</p>
-            <p v-if="draftNotice" class="mailbox-notice" role="status">{{ draftNotice }}</p>
-            <p v-if="draftLoading" class="mailbox-loading">正在读取草稿…</p>
-            <div v-else-if="draftWorkspace?.drafts.length" class="draft-list">
-              <article
-                v-for="draft in draftWorkspace.drafts"
-                :key="draft.id"
-                class="draft-list-row"
-                :class="{ 'draft-list-row--selected': selectedDraft?.id === draft.id }"
-              >
-                <button type="button" @click="openDraft(draft.id)">
-                  <span class="draft-list-recipient">
-                    {{ draft.recipientPreview || '尚未填写收件人' }}
-                  </span>
-                  <strong>{{ draft.subject || '（无主题）' }}</strong>
-                  <span>
-                    {{ draft.conflictCopy ? '冲突副本 · ' : '' }}{{ formatDate(draft.updatedAt) }}
-                  </span>
-                </button>
-                <button
-                  v-if="draft.status === 'trashed'"
-                  class="button button--secondary button--compact"
-                  type="button"
-                  :disabled="draftAction !== null"
-                  @click="restoreDraft(draft.id)"
-                >
-                  {{ draftAction === `restore:${draft.id}` ? '正在恢复' : '恢复' }}
-                </button>
-              </article>
-            </div>
-            <p v-else class="empty-state">
-              {{ draftListStatus === 'active' ? '草稿箱暂时为空。' : '没有已丢弃的草稿。' }}
-            </p>
-          </aside>
-
-          <article class="draft-editor-panel">
-            <template v-if="selectedDraft">
-              <header class="draft-editor-header">
-                <button
-                  class="icon-button draft-back-button"
-                  type="button"
-                  title="返回草稿列表"
-                  aria-label="返回草稿列表"
-                  @click="closeSelectedDraft"
-                >
-                  <ArrowLeft :size="17" />
-                </button>
-                <div class="draft-save-status" :data-state="draftSaveState">
-                  <span aria-hidden="true"></span>
-                  {{ draftSaveStateLabel() }}
-                </div>
-                <div class="draft-editor-actions">
-                  <button
-                    v-if="selectedDraft.status === 'active'"
-                    class="button button--primary button--compact"
-                    type="button"
-                    :disabled="draftSaveInFlight || draftAction !== null"
-                    @click="sendCurrentDraft"
-                  >
-                    <Send :size="15" />
-                    {{ draftAction === `send:${selectedDraft.id}` ? '正在发送' : '发送' }}
-                  </button>
-                  <button
-                    v-if="selectedDraft.status === 'active'"
                     class="icon-button"
                     type="button"
-                    title="更多草稿操作"
-                    aria-label="更多草稿操作"
-                    :aria-expanded="draftActionsOpen"
-                    @click="draftActionsOpen = !draftActionsOpen"
+                    :title="mailboxView === 'trash' ? '恢复' : '移入垃圾箱'"
+                    :aria-label="mailboxView === 'trash' ? '恢复' : '移入垃圾箱'"
+                    :disabled="mailboxBulkAction !== null"
+                    @click="
+                      runMailboxOrganizeAction(
+                        mailboxView === 'trash' ? 'restore_from_trash' : 'move_to_trash',
+                      )
+                    "
                   >
-                    <MoreHorizontal :size="18" />
+                    <Undo2 v-if="mailboxView === 'trash'" :size="17" />
+                    <Trash2 v-else :size="17" />
+                  </button>
+                </div>
+                <p v-if="mailboxError" class="mailbox-error" role="alert">{{ mailboxError }}</p>
+                <p v-if="mailboxNotice" class="mailbox-notice" role="status">{{ mailboxNotice }}</p>
+                <p v-if="mailboxLoading" class="mailbox-loading" role="status">正在读取邮件…</p>
+                <p
+                  v-else-if="mailboxSearchIndex?.status === 'building'"
+                  class="mailbox-search-status"
+                  role="status"
+                >
+                  正在建立正文搜索索引，尚有
+                  {{ mailboxSearchIndex.pendingMessageCount }} 封邮件未完成。
+                </p>
+                <p
+                  v-else-if="mailboxSearchIndex?.status === 'needs_attention'"
+                  class="mailbox-search-status mailbox-search-status--attention"
+                  role="alert"
+                >
+                  正文搜索索引需要管理员处理，普通筛选仍可使用。
+                </p>
+                <div v-else-if="mailboxItems.length" class="mailbox-message-list">
+                  <article
+                    v-for="item in mailboxItems"
+                    :key="item.id"
+                    class="mailbox-message-row"
+                    :class="{
+                      'mailbox-message-row--unread': !item.isRead,
+                      'mailbox-message-row--selected': selectedMessage?.id === item.id,
+                      'mailbox-message-row--checked': selectedMailboxEntryIds.has(item.id),
+                    }"
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="selectedMailboxEntryIds.has(item.id)"
+                      :aria-label="`选择邮件：${item.subject || '无主题'}`"
+                      @change="toggleMailboxSelection(item.id)"
+                    />
+                    <button
+                      class="mailbox-message-open"
+                      type="button"
+                      @click="openMailboxMessage(item)"
+                    >
+                      <span class="mailbox-message-main">
+                        <span class="mailbox-message-sender">{{ mailboxSenderLabel(item) }}</span>
+                        <span class="mailbox-message-subject">{{
+                          item.subject || '（无主题）'
+                        }}</span>
+                        <span class="mailbox-message-delivery">
+                          {{ mailboxScopeLabel(item) }} ·
+                          {{ item.actualDeliveryAddresses.join('、') || '投递地址未知' }}
+                        </span>
+                      </span>
+                      <span class="mailbox-message-meta">
+                        <time :datetime="new Date(item.occurredAt).toISOString()">{{
+                          formatDate(item.occurredAt)
+                        }}</time>
+                        <span v-if="item.conversationMessageCount > 1">
+                          {{ item.conversationMessageCount }} 封
+                          <template v-if="item.conversationUnreadCount > 0">
+                            · {{ item.conversationUnreadCount }} 封未读
+                          </template>
+                        </span>
+                        <span v-if="item.hasAttachments" class="mailbox-attachment-count">
+                          <Paperclip :size="13" />
+                          {{ item.attachmentCount }}
+                        </span>
+                        <span v-if="item.trashDueAt">{{
+                          mailboxTrashDueLabel(item.trashDueAt)
+                        }}</span>
+                      </span>
+                    </button>
+                    <button
+                      class="icon-button mailbox-row-star"
+                      type="button"
+                      :title="item.isStarred ? '取消星标' : '添加星标'"
+                      :aria-label="item.isStarred ? '取消星标' : '添加星标'"
+                      :disabled="mailboxBulkAction !== null"
+                      @click="
+                        runMailboxOrganizeAction(item.isStarred ? 'unstar' : 'star', [item.id])
+                      "
+                    >
+                      <Star :size="16" :fill="item.isStarred ? 'currentColor' : 'none'" />
+                    </button>
+                  </article>
+                  <button
+                    v-if="mailboxNextCursor"
+                    class="button button--secondary mailbox-load-more"
+                    type="button"
+                    :disabled="mailboxLoadingMore"
+                    @click="refreshMailbox(true)"
+                  >
+                    {{ mailboxLoadingMore ? '正在加载' : '加载更多' }}
+                  </button>
+                </div>
+                <p v-else class="empty-state">{{ mailboxEmptyLabel(mailboxView) }}</p>
+              </template>
+
+              <template v-else>
+                <form
+                  class="mailbox-search"
+                  role="search"
+                  @submit.prevent="applyUnallocatedMailSearch"
+                >
+                  <div class="mailbox-search-primary">
+                    <Search :size="16" aria-hidden="true" />
+                    <input
+                      v-model="unallocatedMailQuery"
+                      type="search"
+                      maxlength="320"
+                      aria-label="搜索未分配来信"
+                      placeholder="搜索主题、发件人或投递地址"
+                    />
+                    <div class="mailbox-search-primary-actions">
+                      <button
+                        class="icon-button"
+                        type="submit"
+                        title="搜索"
+                        aria-label="搜索"
+                        :disabled="unallocatedMailLoading"
+                      >
+                        <Search :size="16" />
+                      </button>
+                      <button
+                        v-if="unallocatedMailAppliedQuery"
+                        class="icon-button"
+                        type="button"
+                        title="清除搜索"
+                        aria-label="清除搜索"
+                        :disabled="unallocatedMailLoading"
+                        @click="clearUnallocatedMailSearch"
+                      >
+                        <X :size="16" />
+                      </button>
+                    </div>
+                  </div>
+                </form>
+                <div class="mailbox-list-heading mailbox-list-heading--plain">
+                  <div>
+                    <h2 id="mailbox-list-title">未分配来信</h2>
+                    <p>{{ unallocatedMailItems.length }} 封已加载</p>
+                  </div>
+                </div>
+                <p v-if="mailboxError" class="mailbox-error" role="alert">{{ mailboxError }}</p>
+                <p v-if="mailboxNotice" class="mailbox-notice" role="status">{{ mailboxNotice }}</p>
+                <p v-if="unallocatedMailLoading" class="mailbox-loading" role="status">
+                  正在读取未分配来信…
+                </p>
+                <div v-else-if="unallocatedMailItems.length" class="mailbox-message-list">
+                  <article
+                    v-for="item in unallocatedMailItems"
+                    :key="item.deliveryId"
+                    class="mailbox-message-row mailbox-message-row--unallocated"
+                    :class="{
+                      'mailbox-message-row--selected':
+                        selectedUnallocatedMessage?.deliveryId === item.deliveryId,
+                    }"
+                  >
+                    <button
+                      class="mailbox-message-open"
+                      type="button"
+                      @click="openUnallocatedMessage(item)"
+                    >
+                      <span class="mailbox-message-main">
+                        <span class="mailbox-message-sender">{{
+                          unallocatedSenderLabel(item)
+                        }}</span>
+                        <span class="mailbox-message-subject">{{
+                          item.subject || '（无主题）'
+                        }}</span>
+                        <span class="mailbox-message-delivery">{{
+                          item.actualDeliveryAddress
+                        }}</span>
+                      </span>
+                      <span class="mailbox-message-meta">
+                        <time :datetime="new Date(item.occurredAt).toISOString()">
+                          {{ formatDate(item.occurredAt) }}
+                        </time>
+                        <span v-if="item.hasAttachments" class="mailbox-attachment-count">
+                          <Paperclip :size="13" />
+                          {{ item.attachmentCount }}
+                        </span>
+                      </span>
+                    </button>
+                  </article>
+                  <button
+                    v-if="unallocatedMailNextCursor"
+                    class="button button--secondary mailbox-load-more"
+                    type="button"
+                    :disabled="unallocatedMailLoadingMore"
+                    @click="refreshUnallocatedMail(true)"
+                  >
+                    {{ unallocatedMailLoadingMore ? '正在加载' : '加载更多' }}
+                  </button>
+                </div>
+                <p v-else class="empty-state">
+                  {{
+                    unallocatedMailAppliedQuery
+                      ? '没有符合条件的未分配来信。'
+                      : '当前没有未分配来信。'
+                  }}
+                </p>
+              </template>
+            </section>
+
+            <article
+              ref="mailboxDetailPanel"
+              class="mailbox-detail-panel"
+              :class="{
+                'mailbox-detail-panel--visible-mobile':
+                  selectedMessage ||
+                  selectedMessageLoading ||
+                  selectedUnallocatedMessage ||
+                  selectedUnallocatedMessageLoading,
+              }"
+              aria-label="邮件详情"
+            >
+              <p
+                v-if="selectedMessageLoading || selectedUnallocatedMessageLoading"
+                class="mailbox-loading"
+              >
+                正在打开邮件…
+              </p>
+              <template v-else-if="mailboxMode === 'assigned' && selectedMessage">
+                <div class="mailbox-detail-toolbar">
+                  <button
+                    class="button button--secondary button--compact mailbox-back-button"
+                    type="button"
+                    @click="requestCloseMailboxMessage"
+                  >
+                    <ArrowLeft :size="16" />
+                    返回
+                  </button>
+                  <div class="mailbox-detail-actions">
+                    <button
+                      v-if="selectedMessage.entryKind === 'received'"
+                      class="button button--primary button--compact"
+                      type="button"
+                      title="回复"
+                      aria-label="回复"
+                      :disabled="selectedMessageAction !== null || mailboxBulkAction !== null"
+                      @click="startRelatedDraft('reply')"
+                    >
+                      <Reply :size="17" />
+                      <span>回复</span>
+                    </button>
+                    <button
+                      v-if="selectedMessage.entryKind === 'received'"
+                      class="button button--secondary button--compact"
+                      type="button"
+                      title="回复全部"
+                      aria-label="回复全部"
+                      :disabled="selectedMessageAction !== null || mailboxBulkAction !== null"
+                      @click="startRelatedDraft('reply_all')"
+                    >
+                      <ReplyAll :size="17" />
+                      <span>回复全部</span>
+                    </button>
+                    <button
+                      v-if="messageActionsOpen"
+                      class="icon-button mailbox-secondary-action"
+                      type="button"
+                      title="转发"
+                      aria-label="转发"
+                      :disabled="selectedMessageAction !== null || mailboxBulkAction !== null"
+                      @click="startRelatedDraft('forward')"
+                    >
+                      <Forward :size="17" />
+                    </button>
+                    <button
+                      v-if="messageActionsOpen"
+                      class="button button--secondary button--compact mailbox-secondary-action"
+                      type="button"
+                      :disabled="selectedMessageAction !== null || mailboxBulkAction !== null"
+                      @click="toggleSelectedMessageRead"
+                    >
+                      <Mail v-if="selectedMessage.isRead" :size="16" />
+                      <MailOpen v-else :size="16" />
+                      {{ selectedMessage.isRead ? '标为未读' : '标为已读' }}
+                    </button>
+                    <button
+                      class="icon-button"
+                      type="button"
+                      :title="selectedMessage.isStarred ? '取消星标' : '添加星标'"
+                      :aria-label="selectedMessage.isStarred ? '取消星标' : '添加星标'"
+                      :disabled="mailboxBulkAction !== null"
+                      @click="
+                        runMailboxOrganizeAction(selectedMessage.isStarred ? 'unstar' : 'star', [
+                          selectedMessage.id,
+                        ])
+                      "
+                    >
+                      <Star
+                        :size="17"
+                        :fill="selectedMessage.isStarred ? 'currentColor' : 'none'"
+                      />
+                    </button>
+                    <button
+                      class="icon-button mailbox-more-actions-button"
+                      type="button"
+                      title="更多操作"
+                      aria-label="更多操作"
+                      :aria-expanded="messageActionsOpen"
+                      @click="messageActionsOpen = !messageActionsOpen"
+                    >
+                      <MoreHorizontal :size="18" />
+                    </button>
+                    <button
+                      v-if="
+                        messageActionsOpen &&
+                        selectedMessage.entryKind === 'received' &&
+                        selectedMessage.location === 'inbox'
+                      "
+                      class="icon-button mailbox-secondary-action"
+                      type="button"
+                      :title="selectedMessage.isArchived ? '取消归档' : '归档'"
+                      :aria-label="selectedMessage.isArchived ? '取消归档' : '归档'"
+                      :disabled="mailboxBulkAction !== null"
+                      @click="
+                        runMailboxOrganizeAction(
+                          selectedMessage.isArchived ? 'unarchive' : 'archive',
+                          [selectedMessage.id],
+                        )
+                      "
+                    >
+                      <ArchiveRestore v-if="selectedMessage.isArchived" :size="17" />
+                      <Archive v-else :size="17" />
+                    </button>
+                    <button
+                      v-if="
+                        messageActionsOpen &&
+                        selectedMessage.entryKind === 'received' &&
+                        selectedMessage.location === 'inbox'
+                      "
+                      class="icon-button mailbox-secondary-action"
+                      type="button"
+                      title="标为垃圾邮件"
+                      aria-label="标为垃圾邮件"
+                      :disabled="mailboxBulkAction !== null"
+                      @click="runMailboxOrganizeAction('mark_spam', [selectedMessage.id])"
+                    >
+                      <OctagonAlert :size="17" />
+                    </button>
+                    <button
+                      v-if="messageActionsOpen && selectedMessage.location === 'spam'"
+                      class="icon-button mailbox-secondary-action"
+                      type="button"
+                      title="不是垃圾邮件"
+                      aria-label="不是垃圾邮件"
+                      :disabled="mailboxBulkAction !== null"
+                      @click="runMailboxOrganizeAction('restore_from_spam', [selectedMessage.id])"
+                    >
+                      <Undo2 :size="17" />
+                    </button>
+                    <button
+                      v-if="messageActionsOpen"
+                      class="icon-button mailbox-secondary-action"
+                      type="button"
+                      :title="selectedMessage.location === 'trash' ? '恢复' : '移入垃圾箱'"
+                      :aria-label="selectedMessage.location === 'trash' ? '恢复' : '移入垃圾箱'"
+                      :disabled="mailboxBulkAction !== null"
+                      @click="
+                        runMailboxOrganizeAction(
+                          selectedMessage.location === 'trash'
+                            ? 'restore_from_trash'
+                            : 'move_to_trash',
+                          [selectedMessage.id],
+                        )
+                      "
+                    >
+                      <Undo2 v-if="selectedMessage.location === 'trash'" :size="17" />
+                      <Trash2 v-else :size="17" />
+                    </button>
+                    <button
+                      v-if="
+                        messageActionsOpen &&
+                        selectedMessage.location === 'trash' &&
+                        selectedMessage.canPermanentlyDelete
+                      "
+                      class="button button--danger-quiet button--compact mailbox-secondary-action"
+                      type="button"
+                      :disabled="selectedMessageAction !== null || mailboxBulkAction !== null"
+                      @click="requestMailboxPermanentDeletion"
+                    >
+                      <Trash2 :size="16" />
+                      永久删除
+                    </button>
+                  </div>
+                </div>
+
+                <section
+                  v-if="pendingMailboxPermanentDeletion"
+                  class="destructive-confirmation mailbox-delete-confirmation"
+                  aria-labelledby="mailbox-permanent-deletion-title"
+                >
+                  <h2 id="mailbox-permanent-deletion-title">
+                    {{
+                      pendingMailboxPermanentDeletion.mailboxType === 'organization'
+                        ? '为组织永久删除邮件'
+                        : '永久删除个人邮件'
+                    }}
+                  </h2>
+                  <p>{{ mailboxPermanentDeletionImpactText() }}</p>
+                  <label class="checkbox-field">
+                    <input v-model="mailboxPermanentDeletionConfirmed" type="checkbox" />
+                    <span>
+                      {{
+                        pendingMailboxPermanentDeletion.mailboxType === 'organization'
+                          ? '我确认所有组织成员都将失去这封邮件'
+                          : '我确认永久删除这封个人邮件'
+                      }}
+                    </span>
+                  </label>
+                  <div class="confirmation-actions">
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="selectedMessageAction !== null"
+                      @click="cancelMailboxPermanentDeletion"
+                    >
+                      取消
+                    </button>
+                    <button
+                      class="button button--danger-quiet button--compact"
+                      type="button"
+                      :disabled="
+                        !mailboxPermanentDeletionConfirmed || selectedMessageAction !== null
+                      "
+                      @click="confirmMailboxPermanentDeletion"
+                    >
+                      {{ selectedMessageAction === 'permanent-delete' ? '正在删除' : '永久删除' }}
+                    </button>
+                  </div>
+                </section>
+
+                <nav
+                  v-if="selectedConversationEntries.length > 1"
+                  class="mailbox-conversation-timeline"
+                  aria-label="会话邮件"
+                >
+                  <button
+                    v-for="entry in selectedConversationEntries"
+                    :key="entry.id"
+                    type="button"
+                    :class="{
+                      'mailbox-conversation-entry--active': entry.id === selectedMessage.id,
+                      'mailbox-conversation-entry--unread': !entry.isRead,
+                    }"
+                    :aria-current="entry.id === selectedMessage.id ? 'true' : undefined"
+                    @click="openMailboxMessage(entry)"
+                  >
+                    <span>{{
+                      entry.sender?.displayName || entry.sender?.address || '未知发件人'
+                    }}</span>
+                    <time :datetime="new Date(entry.occurredAt).toISOString()">
+                      {{ formatDate(entry.occurredAt) }}
+                    </time>
+                    <Paperclip v-if="entry.hasAttachments" :size="13" />
+                  </button>
+                </nav>
+
+                <header class="mailbox-detail-header">
+                  <p class="mailbox-detail-scope">
+                    {{ selectedMessage.organization?.name ?? '个人邮箱' }}
+                  </p>
+                  <p v-if="selectedMessage.trashDueAt" class="mailbox-trash-due">
+                    {{ mailboxTrashDueLabel(selectedMessage.trashDueAt) }}
+                  </p>
+                  <p
+                    v-if="
+                      selectedMessage.location === 'trash' &&
+                      selectedMessage.mailboxType === 'organization' &&
+                      !selectedMessage.canPermanentlyDelete
+                    "
+                    class="mailbox-trash-permission"
+                  >
+                    只有组织创建者可以为整个组织永久删除这封邮件。
+                  </p>
+                  <h2 ref="mailboxDetailHeading" tabindex="-1">
+                    {{ selectedMessage.subject || '（无主题）' }}
+                  </h2>
+                  <dl class="mailbox-header-addresses">
+                    <div
+                      v-for="(address, index) in selectedMessage.addresses"
+                      :key="`${address.role}-${index}`"
+                    >
+                      <dt>{{ headerRoleLabel(address.role) }}</dt>
+                      <dd>
+                        <strong v-if="address.displayName">{{ address.displayName }}</strong>
+                        <span>{{ address.address }}</span>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>实际投递</dt>
+                      <dd>{{ selectedMessage.actualDeliveryAddresses.join('、') }}</dd>
+                    </div>
+                    <div>
+                      <dt>时间</dt>
+                      <dd>
+                        {{ formatDate(selectedMessage.headerDateAt ?? selectedMessage.acceptedAt) }}
+                      </dd>
+                    </div>
+                  </dl>
+                </header>
+
+                <div
+                  v-if="selectedMessage.untrustedHtmlBody && !selectedMessage.remoteImagesAllowed"
+                  class="remote-image-notice"
+                >
+                  <span>远程图片已阻止。</span>
+                  <button
+                    type="button"
+                    :disabled="selectedMessageAction !== null"
+                    @click="changeRemoteImagePermission('message')"
+                  >
+                    仅本封显示
                   </button>
                   <button
-                    v-if="selectedDraft.status === 'active' && draftActionsOpen"
-                    class="button button--secondary button--compact"
+                    v-if="selectedMessage.trustedSenderAddress"
                     type="button"
-                    :disabled="draftSaveInFlight || draftAction !== null"
-                    @click="saveDraftNow"
+                    :disabled="selectedMessageAction !== null"
+                    @click="removeSelectedTrustedSender"
                   >
-                    保存
+                    取消信任此发件人
                   </button>
                   <button
-                    v-if="selectedDraft.status === 'active' && draftActionsOpen"
-                    class="button button--danger-quiet button--compact"
+                    v-else-if="selectedMessageSender"
                     type="button"
-                    :disabled="draftAction !== null"
-                    @click="trashSelectedDraft"
+                    :disabled="selectedMessageAction !== null"
+                    @click="changeRemoteImagePermission('sender')"
                   >
-                    {{ draftAction === `trash:${selectedDraft.id}` ? '正在丢弃' : '丢弃' }}
+                    信任此发件人
+                  </button>
+                </div>
+                <div
+                  v-else-if="
+                    selectedMessage.untrustedHtmlBody && selectedMessage.remoteImagesAllowed
+                  "
+                  class="remote-image-notice remote-image-notice--allowed"
+                >
+                  <span>
+                    {{
+                      selectedMessage.remoteImagePermission === 'sender'
+                        ? '已信任此发件人的远程图片。'
+                        : '已为本封邮件显示远程图片。'
+                    }}
+                  </span>
+                  <button
+                    v-if="selectedMessage.trustedSenderAddress"
+                    type="button"
+                    :disabled="selectedMessageAction !== null"
+                    @click="removeSelectedTrustedSender"
+                  >
+                    取消信任
                   </button>
                   <button
                     v-else
-                    class="button button--secondary button--compact"
                     type="button"
-                    :disabled="draftAction !== null"
-                    @click="restoreDraft(selectedDraft.id)"
+                    :disabled="selectedMessageAction !== null"
+                    @click="changeRemoteImagePermission('block')"
                   >
-                    恢复草稿
+                    重新阻止
                   </button>
-                </div>
-              </header>
-
-              <p v-if="draftError" class="mailbox-error draft-editor-feedback" role="alert">
-                {{ draftError }}
-              </p>
-              <p v-if="draftNotice" class="mailbox-notice draft-editor-feedback" role="status">
-                {{ draftNotice }}
-              </p>
-
-              <form class="draft-editor-form" @submit.prevent="saveDraftNow">
-                <label class="draft-field-row">
-                  <span>发件人</span>
-                  <select
-                    v-model="draftForm.senderAddressId"
-                    :disabled="selectedDraft.status !== 'active'"
-                    @change="scheduleDraftSave"
-                  >
-                    <option :value="null">未选择</option>
-                    <option
-                      v-for="sender in draftWorkspace?.senderAddresses ?? []"
-                      :key="sender.id"
-                      :value="sender.id"
-                    >
-                      {{ sender.organizationName ? `${sender.organizationName} · ` : ''
-                      }}{{ sender.address }}
-                    </option>
-                  </select>
-                  <small v-if="!selectedDraft.senderAvailable" class="field-error">
-                    原发件地址当前不可用，请重新选择。
-                  </small>
-                </label>
-                <label class="draft-field-row">
-                  <span>收件人</span>
-                  <input
-                    v-model="draftForm.to"
-                    type="text"
-                    autocomplete="off"
-                    placeholder="name@example.com"
-                    :disabled="selectedDraft.status !== 'active'"
-                    @input="scheduleDraftSave"
-                  />
-                </label>
-                <button
-                  class="draft-copy-toggle"
-                  type="button"
-                  :aria-expanded="draftCopiesOpen"
-                  @click="draftCopiesOpen = !draftCopiesOpen"
-                >
-                  {{ draftCopiesOpen ? '收起抄送与密送' : '添加抄送或密送' }}
-                </button>
-                <label v-show="draftCopiesOpen || Boolean(draftForm.cc)" class="draft-field-row">
-                  <span>抄送</span>
-                  <input
-                    v-model="draftForm.cc"
-                    type="text"
-                    autocomplete="off"
-                    :disabled="selectedDraft.status !== 'active'"
-                    @input="scheduleDraftSave"
-                  />
-                </label>
-                <label v-show="draftCopiesOpen || Boolean(draftForm.bcc)" class="draft-field-row">
-                  <span>密送</span>
-                  <input
-                    v-model="draftForm.bcc"
-                    type="text"
-                    autocomplete="off"
-                    :disabled="selectedDraft.status !== 'active'"
-                    @input="scheduleDraftSave"
-                  />
-                </label>
-                <label class="draft-field-row">
-                  <span>主题</span>
-                  <input
-                    v-model="draftForm.subject"
-                    type="text"
-                    maxlength="998"
-                    :disabled="selectedDraft.status !== 'active'"
-                    @input="scheduleDraftSave"
-                  />
-                </label>
-
-                <div class="draft-body-toolbar">
-                  <div class="draft-format-switch" role="group" aria-label="正文格式">
-                    <button
-                      type="button"
-                      :aria-pressed="draftForm.bodyFormat === 'rich_text'"
-                      :disabled="selectedDraft.status !== 'active'"
-                      @click="changeDraftBodyFormat('rich_text')"
-                    >
-                      富文本
-                    </button>
-                    <button
-                      type="button"
-                      :aria-pressed="draftForm.bodyFormat === 'plain_text'"
-                      :disabled="selectedDraft.status !== 'active'"
-                      @click="changeDraftBodyFormat('plain_text')"
-                    >
-                      纯文本
-                    </button>
-                  </div>
-                  <div v-if="draftForm.bodyFormat === 'rich_text'" class="draft-format-actions">
-                    <button
-                      class="icon-button"
-                      type="button"
-                      title="加粗"
-                      aria-label="加粗"
-                      :disabled="selectedDraft.status !== 'active'"
-                      @mousedown.prevent
-                      @click="applyDraftFormat('bold')"
-                    >
-                      <Bold :size="16" />
-                    </button>
-                    <button
-                      class="icon-button"
-                      type="button"
-                      title="斜体"
-                      aria-label="斜体"
-                      :disabled="selectedDraft.status !== 'active'"
-                      @mousedown.prevent
-                      @click="applyDraftFormat('italic')"
-                    >
-                      <Italic :size="16" />
-                    </button>
-                    <button
-                      class="icon-button"
-                      type="button"
-                      title="项目列表"
-                      aria-label="项目列表"
-                      :disabled="selectedDraft.status !== 'active'"
-                      @mousedown.prevent
-                      @click="applyDraftFormat('insertUnorderedList')"
-                    >
-                      <List :size="16" />
-                    </button>
-                  </div>
                 </div>
 
                 <div
-                  v-if="draftForm.bodyFormat === 'rich_text'"
-                  ref="draftRichEditor"
-                  class="draft-rich-editor"
-                  :contenteditable="selectedDraft.status === 'active'"
-                  role="textbox"
-                  aria-label="邮件正文"
-                  aria-multiline="true"
-                  @input="handleRichDraftInput"
-                ></div>
-                <textarea
-                  v-else
-                  v-model="draftForm.body"
-                  class="draft-plain-editor"
-                  rows="14"
-                  aria-label="邮件正文"
-                  :readonly="selectedDraft.status !== 'active'"
-                  @input="scheduleDraftSave"
-                ></textarea>
-
-                <section class="draft-attachments" aria-labelledby="draft-attachments-title">
-                  <div class="section-heading--row">
-                    <div>
-                      <h2 id="draft-attachments-title">附件</h2>
-                      <p>
-                        {{ selectedDraft.attachments.length }} 个 ·
-                        {{ formatFileSize(draftAttachmentTotalSize) }} / 20 MB
-                      </p>
-                    </div>
-                    <label
-                      v-if="selectedDraft.status === 'active'"
-                      class="button button--secondary button--compact draft-upload-button"
-                    >
-                      <Paperclip :size="15" />
-                      <span>{{ draftAction === 'attachment' ? '正在上传' : '添加附件' }}</span>
-                      <input
-                        type="file"
-                        multiple
-                        :disabled="draftAction !== null || draftSaveInFlight"
-                        @change="uploadDraftFiles"
-                      />
-                    </label>
-                  </div>
-                  <div v-if="selectedDraft.attachments.length" class="draft-attachment-list">
-                    <article
-                      v-for="attachment in selectedDraft.attachments"
-                      :key="attachment.id"
-                      class="draft-attachment-row"
-                    >
-                      <div>
-                        <strong>{{ attachment.fileName }}</strong>
-                        <span>{{ formatFileSize(attachment.sizeBytes) }}</span>
-                      </div>
-                      <div>
-                        <a
-                          class="button button--secondary button--compact"
-                          :href="draftAttachmentUrl(selectedDraft.id, attachment.id)"
-                        >
-                          下载
-                        </a>
-                        <button
-                          v-if="selectedDraft.status === 'active'"
-                          class="icon-button"
-                          type="button"
-                          title="移除附件"
-                          :aria-label="`移除附件 ${attachment.fileName}`"
-                          :disabled="draftSaveInFlight"
-                          @click="removeDraftAttachment(attachment.id)"
-                        >
-                          <X :size="16" />
-                        </button>
-                      </div>
-                    </article>
-                  </div>
-                  <p v-else class="empty-state">没有附件。</p>
-                </section>
-              </form>
-            </template>
-            <div v-else-if="lastSendOperation" class="draft-send-result" aria-live="polite">
-              <div class="section-heading section-heading--row">
-                <div>
-                  <p class="eyebrow">发信结果</p>
-                  <h2>{{ lastSendOperation.subject || '无主题' }}</h2>
-                </div>
-                <button
-                  class="button button--secondary button--compact"
-                  type="button"
-                  @click="refreshLastSendOperation"
+                  v-if="selectedMessage.untrustedHtmlBody && selectedMessage.plainTextBody !== null"
+                  class="message-body-tabs"
+                  role="group"
+                  aria-label="正文格式"
                 >
-                  刷新状态
+                  <button
+                    type="button"
+                    :aria-pressed="selectedMessageBodyMode === 'html'"
+                    @click="selectedMessageBodyMode = 'html'"
+                  >
+                    HTML
+                  </button>
+                  <button
+                    type="button"
+                    :aria-pressed="selectedMessageBodyMode === 'plain'"
+                    @click="selectedMessageBodyMode = 'plain'"
+                  >
+                    纯文本
+                  </button>
+                </div>
+
+                <iframe
+                  v-if="selectedMessage.untrustedHtmlBody && selectedMessageBodyMode === 'html'"
+                  class="safe-mail-frame"
+                  title="邮件 HTML 正文"
+                  sandbox="allow-popups allow-popups-to-escape-sandbox"
+                  :srcdoc="safeSelectedMessageHtml"
+                />
+                <pre v-else class="plain-mail-body">{{ selectedMessage.plainTextBody ?? '' }}</pre>
+
+                <section v-if="selectedMessage.attachments.length" class="mailbox-attachments">
+                  <h3>附件</h3>
+                  <article
+                    v-for="attachment in selectedMessage.attachments"
+                    :key="attachment.id"
+                    class="mailbox-attachment-row"
+                  >
+                    <div>
+                      <strong>{{ attachment.fileName }}</strong>
+                      <span
+                        >{{ attachment.mediaType }} ·
+                        {{ formatFileSize(attachment.sizeBytes) }}</span
+                      >
+                    </div>
+                    <div class="mailbox-attachment-actions">
+                      <button
+                        v-if="attachment.previewable"
+                        class="button button--secondary button--compact"
+                        type="button"
+                        @click="
+                          previewAttachmentId =
+                            previewAttachmentId === attachment.id ? null : attachment.id
+                        "
+                      >
+                        {{ previewAttachmentId === attachment.id ? '关闭预览' : '预览' }}
+                      </button>
+                      <a
+                        class="button button--secondary button--compact"
+                        :href="attachmentUrl(selectedMessage.id, attachment.id)"
+                      >
+                        下载
+                      </a>
+                    </div>
+                    <img
+                      v-if="attachment.previewable && previewAttachmentId === attachment.id"
+                      class="mailbox-attachment-preview"
+                      :src="attachmentUrl(selectedMessage.id, attachment.id, true)"
+                      :alt="attachment.fileName"
+                    />
+                  </article>
+                </section>
+              </template>
+              <template v-else-if="mailboxMode === 'unallocated' && selectedUnallocatedMessage">
+                <div class="mailbox-detail-toolbar">
+                  <button
+                    class="button button--secondary button--compact mailbox-back-button"
+                    type="button"
+                    @click="requestCloseUnallocatedMessage"
+                  >
+                    <ArrowLeft :size="16" />
+                    返回
+                  </button>
+                  <div class="mailbox-detail-actions">
+                    <button
+                      class="button button--primary button--compact"
+                      type="button"
+                      :disabled="unallocatedMailAction !== null"
+                      @click="requestUnallocatedClaim"
+                    >
+                      {{ unallocatedMailAction === 'claim' ? '正在认领' : '认领地址' }}
+                    </button>
+                  </div>
+                </div>
+
+                <section
+                  v-if="pendingUnallocatedClaim"
+                  class="destructive-confirmation mailbox-delete-confirmation"
+                  aria-labelledby="unallocated-claim-title"
+                >
+                  <h2 id="unallocated-claim-title">认领未分配地址</h2>
+                  <p>
+                    将把 <strong>{{ pendingUnallocatedClaim.actualDeliveryAddress }}</strong>
+                    建立为你的个人别名，并把这个地址当前未分配时期的全部历史来信加入个人邮箱。操作会占用个人别名和逻辑存储额度。
+                  </p>
+                  <label class="checkbox-field">
+                    <input v-model="unallocatedClaimConfirmed" type="checkbox" />
+                    <span>我确认认领这个地址及其当前历史来信</span>
+                  </label>
+                  <div class="confirmation-actions">
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="unallocatedMailAction !== null"
+                      @click="cancelUnallocatedClaim"
+                    >
+                      取消
+                    </button>
+                    <button
+                      class="button button--primary button--compact"
+                      type="button"
+                      :disabled="!unallocatedClaimConfirmed || unallocatedMailAction !== null"
+                      @click="confirmUnallocatedClaim"
+                    >
+                      {{ unallocatedMailAction === 'claim' ? '正在认领' : '确认认领' }}
+                    </button>
+                  </div>
+                </section>
+
+                <header class="mailbox-detail-header">
+                  <p class="mailbox-detail-scope">未分配来信</p>
+                  <h2 ref="mailboxDetailHeading" tabindex="-1">
+                    {{ selectedUnallocatedMessage.subject || '（无主题）' }}
+                  </h2>
+                  <dl class="mailbox-header-addresses">
+                    <div
+                      v-for="(address, index) in selectedUnallocatedMessage.addresses"
+                      :key="`${address.role}-${index}`"
+                    >
+                      <dt>{{ headerRoleLabel(address.role) }}</dt>
+                      <dd>
+                        <strong v-if="address.displayName">{{ address.displayName }}</strong>
+                        <span>{{ address.address }}</span>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>实际投递</dt>
+                      <dd>{{ selectedUnallocatedMessage.actualDeliveryAddress }}</dd>
+                    </div>
+                    <div>
+                      <dt>时间</dt>
+                      <dd>
+                        {{
+                          formatDate(
+                            selectedUnallocatedMessage.headerDateAt ??
+                              selectedUnallocatedMessage.acceptedAt,
+                          )
+                        }}
+                      </dd>
+                    </div>
+                  </dl>
+                </header>
+
+                <div
+                  v-if="selectedUnallocatedMessage.untrustedHtmlBody"
+                  class="remote-image-notice"
+                >
+                  <span>远程图片已阻止；认领前不能放行。</span>
+                </div>
+
+                <div
+                  v-if="
+                    selectedUnallocatedMessage.untrustedHtmlBody &&
+                    selectedUnallocatedMessage.plainTextBody !== null
+                  "
+                  class="message-body-tabs"
+                  role="group"
+                  aria-label="正文格式"
+                >
+                  <button
+                    type="button"
+                    :aria-pressed="selectedMessageBodyMode === 'html'"
+                    @click="selectedMessageBodyMode = 'html'"
+                  >
+                    HTML
+                  </button>
+                  <button
+                    type="button"
+                    :aria-pressed="selectedMessageBodyMode === 'plain'"
+                    @click="selectedMessageBodyMode = 'plain'"
+                  >
+                    纯文本
+                  </button>
+                </div>
+
+                <iframe
+                  v-if="
+                    selectedUnallocatedMessage.untrustedHtmlBody &&
+                    selectedMessageBodyMode === 'html'
+                  "
+                  class="safe-mail-frame"
+                  title="未分配邮件 HTML 正文"
+                  sandbox="allow-popups allow-popups-to-escape-sandbox"
+                  :srcdoc="safeSelectedUnallocatedMessageHtml"
+                />
+                <pre v-else class="plain-mail-body">{{
+                  selectedUnallocatedMessage.plainTextBody ?? ''
+                }}</pre>
+
+                <section
+                  v-if="selectedUnallocatedMessage.attachments.length"
+                  class="mailbox-attachments"
+                >
+                  <h3>附件</h3>
+                  <article
+                    v-for="attachment in selectedUnallocatedMessage.attachments"
+                    :key="attachment.id"
+                    class="mailbox-attachment-row"
+                  >
+                    <div>
+                      <strong>{{ attachment.fileName }}</strong>
+                      <span
+                        >{{ attachment.mediaType }} ·
+                        {{ formatFileSize(attachment.sizeBytes) }}</span
+                      >
+                    </div>
+                    <div class="mailbox-attachment-actions">
+                      <button
+                        v-if="attachment.previewable"
+                        class="button button--secondary button--compact"
+                        type="button"
+                        @click="
+                          previewAttachmentId =
+                            previewAttachmentId === attachment.id ? null : attachment.id
+                        "
+                      >
+                        {{ previewAttachmentId === attachment.id ? '关闭预览' : '预览' }}
+                      </button>
+                      <a
+                        class="button button--secondary button--compact"
+                        :href="
+                          unallocatedAttachmentUrl(
+                            selectedUnallocatedMessage.deliveryId,
+                            attachment.id,
+                          )
+                        "
+                      >
+                        下载
+                      </a>
+                    </div>
+                    <img
+                      v-if="attachment.previewable && previewAttachmentId === attachment.id"
+                      class="mailbox-attachment-preview"
+                      :src="
+                        unallocatedAttachmentUrl(
+                          selectedUnallocatedMessage.deliveryId,
+                          attachment.id,
+                          true,
+                        )
+                      "
+                      :alt="attachment.fileName"
+                    />
+                  </article>
+                </section>
+              </template>
+              <div v-else class="mailbox-detail-placeholder">
+                <h2>选择一封邮件</h2>
+                <p>邮件正文和附件将在这里显示。</p>
+              </div>
+            </article>
+          </template>
+
+          <template v-else>
+            <aside
+              class="draft-list-panel"
+              :class="{ 'draft-list-panel--hidden-mobile': selectedDraft }"
+            >
+              <header class="draft-list-header">
+                <div>
+                  <h2>{{ draftListStatus === 'active' ? '草稿箱' : '已丢弃草稿' }}</h2>
+                  <p>{{ draftWorkspace?.drafts.length ?? 0 }} 封</p>
+                </div>
+                <div class="draft-list-actions">
+                  <button
+                    class="icon-button"
+                    type="button"
+                    title="新建草稿"
+                    aria-label="新建草稿"
+                    :disabled="draftAction !== null"
+                    @click="startNewDraft"
+                  >
+                    <PenLine :size="17" />
+                  </button>
+                  <button
+                    class="icon-button"
+                    type="button"
+                    title="刷新草稿"
+                    aria-label="刷新草稿"
+                    :disabled="draftLoading"
+                    @click="refreshDrafts"
+                  >
+                    <RefreshCw :size="17" />
+                  </button>
+                </div>
+              </header>
+              <div class="draft-status-tabs" role="group" aria-label="草稿状态">
+                <button
+                  type="button"
+                  :aria-pressed="draftListStatus === 'active'"
+                  @click="enterDraftWorkspace('active')"
+                >
+                  草稿
+                </button>
+                <button
+                  type="button"
+                  :aria-pressed="draftListStatus === 'trashed'"
+                  @click="enterDraftWorkspace('trashed')"
+                >
+                  已丢弃
                 </button>
               </div>
+              <p v-if="draftError" class="mailbox-error" role="alert">{{ draftError }}</p>
               <p v-if="draftNotice" class="mailbox-notice" role="status">{{ draftNotice }}</p>
-              <dl class="send-result-summary">
-                <div>
-                  <dt>发件地址</dt>
-                  <dd>{{ lastSendOperation.senderAddress }}</dd>
-                </div>
-                <div>
-                  <dt>邮件大小</dt>
-                  <dd>{{ formatFileSize(lastSendOperation.payloadSizeBytes) }}</dd>
-                </div>
-              </dl>
-              <div class="send-recipient-list">
-                <article v-for="recipient in lastSendOperation.recipients" :key="recipient.id">
-                  <div>
-                    <strong>{{ recipient.address }}</strong>
-                    <small>{{
-                      recipient.channel === 'internal' ? '系统内投递' : '域外投递'
-                    }}</small>
-                  </div>
-                  <span class="status-label" :data-status="recipient.status">
-                    {{ sendStatusLabel(recipient.status) }}
-                  </span>
+              <p v-if="draftLoading" class="mailbox-loading">正在读取草稿…</p>
+              <div v-else-if="draftWorkspace?.drafts.length" class="draft-list">
+                <article
+                  v-for="draft in draftWorkspace.drafts"
+                  :key="draft.id"
+                  class="draft-list-row"
+                  :class="{ 'draft-list-row--selected': selectedDraft?.id === draft.id }"
+                >
+                  <button type="button" @click="openDraft(draft.id)">
+                    <span class="draft-list-recipient">
+                      {{ draft.recipientPreview || '尚未填写收件人' }}
+                    </span>
+                    <strong>{{ draft.subject || '（无主题）' }}</strong>
+                    <span>
+                      {{ draft.conflictCopy ? '冲突副本 · ' : '' }}{{ formatDate(draft.updatedAt) }}
+                    </span>
+                  </button>
+                  <button
+                    v-if="draft.status === 'trashed'"
+                    class="button button--secondary button--compact"
+                    type="button"
+                    :disabled="draftAction !== null"
+                    @click="restoreDraft(draft.id)"
+                  >
+                    {{ draftAction === `restore:${draft.id}` ? '正在恢复' : '恢复' }}
+                  </button>
                 </article>
               </div>
-            </div>
-            <div v-else class="mailbox-detail-placeholder">
-              <h2>选择或新建草稿</h2>
-            </div>
-          </article>
+              <p v-else class="empty-state">
+                {{ draftListStatus === 'active' ? '草稿箱暂时为空。' : '没有已丢弃的草稿。' }}
+              </p>
+            </aside>
+
+            <article class="draft-editor-panel">
+              <template v-if="selectedDraft">
+                <header class="draft-editor-header">
+                  <button
+                    class="icon-button draft-back-button"
+                    type="button"
+                    title="返回草稿列表"
+                    aria-label="返回草稿列表"
+                    @click="closeSelectedDraft"
+                  >
+                    <ArrowLeft :size="17" />
+                  </button>
+                  <div class="draft-save-status" :data-state="draftSaveState">
+                    <span aria-hidden="true"></span>
+                    {{ draftSaveStateLabel() }}
+                  </div>
+                  <div class="draft-editor-actions">
+                    <button
+                      v-if="selectedDraft.status === 'active'"
+                      class="button button--primary button--compact"
+                      type="button"
+                      :disabled="draftSaveInFlight || draftAction !== null"
+                      @click="sendCurrentDraft"
+                    >
+                      <Send :size="15" />
+                      {{ draftAction === `send:${selectedDraft.id}` ? '正在发送' : '发送' }}
+                    </button>
+                    <button
+                      v-if="selectedDraft.status === 'active'"
+                      class="icon-button"
+                      type="button"
+                      title="更多草稿操作"
+                      aria-label="更多草稿操作"
+                      :aria-expanded="draftActionsOpen"
+                      @click="draftActionsOpen = !draftActionsOpen"
+                    >
+                      <MoreHorizontal :size="18" />
+                    </button>
+                    <button
+                      v-if="selectedDraft.status === 'active' && draftActionsOpen"
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="draftSaveInFlight || draftAction !== null"
+                      @click="saveDraftNow"
+                    >
+                      保存
+                    </button>
+                    <button
+                      v-if="selectedDraft.status === 'active' && draftActionsOpen"
+                      class="button button--danger-quiet button--compact"
+                      type="button"
+                      :disabled="draftAction !== null"
+                      @click="trashSelectedDraft"
+                    >
+                      {{ draftAction === `trash:${selectedDraft.id}` ? '正在丢弃' : '丢弃' }}
+                    </button>
+                    <button
+                      v-else
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="draftAction !== null"
+                      @click="restoreDraft(selectedDraft.id)"
+                    >
+                      恢复草稿
+                    </button>
+                  </div>
+                </header>
+
+                <p v-if="draftError" class="mailbox-error draft-editor-feedback" role="alert">
+                  {{ draftError }}
+                </p>
+                <p v-if="draftNotice" class="mailbox-notice draft-editor-feedback" role="status">
+                  {{ draftNotice }}
+                </p>
+
+                <form class="draft-editor-form" @submit.prevent="saveDraftNow">
+                  <label class="draft-field-row">
+                    <span>发件人</span>
+                    <select
+                      v-model="draftForm.senderAddressId"
+                      :disabled="selectedDraft.status !== 'active'"
+                      @change="scheduleDraftSave"
+                    >
+                      <option :value="null">未选择</option>
+                      <option
+                        v-for="sender in draftWorkspace?.senderAddresses ?? []"
+                        :key="sender.id"
+                        :value="sender.id"
+                      >
+                        {{ sender.organizationName ? `${sender.organizationName} · ` : ''
+                        }}{{ sender.address }}
+                      </option>
+                    </select>
+                    <small v-if="!selectedDraft.senderAvailable" class="field-error">
+                      原发件地址当前不可用，请重新选择。
+                    </small>
+                  </label>
+                  <label class="draft-field-row">
+                    <span>收件人</span>
+                    <input
+                      v-model="draftForm.to"
+                      type="text"
+                      autocomplete="off"
+                      placeholder="name@example.com"
+                      :disabled="selectedDraft.status !== 'active'"
+                      @input="scheduleDraftSave"
+                    />
+                  </label>
+                  <button
+                    class="draft-copy-toggle"
+                    type="button"
+                    :aria-expanded="draftCopiesOpen"
+                    @click="draftCopiesOpen = !draftCopiesOpen"
+                  >
+                    {{ draftCopiesOpen ? '收起抄送与密送' : '添加抄送或密送' }}
+                  </button>
+                  <label v-show="draftCopiesOpen || Boolean(draftForm.cc)" class="draft-field-row">
+                    <span>抄送</span>
+                    <input
+                      v-model="draftForm.cc"
+                      type="text"
+                      autocomplete="off"
+                      :disabled="selectedDraft.status !== 'active'"
+                      @input="scheduleDraftSave"
+                    />
+                  </label>
+                  <label v-show="draftCopiesOpen || Boolean(draftForm.bcc)" class="draft-field-row">
+                    <span>密送</span>
+                    <input
+                      v-model="draftForm.bcc"
+                      type="text"
+                      autocomplete="off"
+                      :disabled="selectedDraft.status !== 'active'"
+                      @input="scheduleDraftSave"
+                    />
+                  </label>
+                  <label class="draft-field-row">
+                    <span>主题</span>
+                    <input
+                      v-model="draftForm.subject"
+                      type="text"
+                      maxlength="998"
+                      :disabled="selectedDraft.status !== 'active'"
+                      @input="scheduleDraftSave"
+                    />
+                  </label>
+
+                  <div class="draft-body-toolbar">
+                    <div class="draft-format-switch" role="group" aria-label="正文格式">
+                      <button
+                        type="button"
+                        :aria-pressed="draftForm.bodyFormat === 'rich_text'"
+                        :disabled="selectedDraft.status !== 'active'"
+                        @click="changeDraftBodyFormat('rich_text')"
+                      >
+                        富文本
+                      </button>
+                      <button
+                        type="button"
+                        :aria-pressed="draftForm.bodyFormat === 'plain_text'"
+                        :disabled="selectedDraft.status !== 'active'"
+                        @click="changeDraftBodyFormat('plain_text')"
+                      >
+                        纯文本
+                      </button>
+                    </div>
+                    <div v-if="draftForm.bodyFormat === 'rich_text'" class="draft-format-actions">
+                      <button
+                        class="icon-button"
+                        type="button"
+                        title="加粗"
+                        aria-label="加粗"
+                        :disabled="selectedDraft.status !== 'active'"
+                        @mousedown.prevent
+                        @click="applyDraftFormat('bold')"
+                      >
+                        <Bold :size="16" />
+                      </button>
+                      <button
+                        class="icon-button"
+                        type="button"
+                        title="斜体"
+                        aria-label="斜体"
+                        :disabled="selectedDraft.status !== 'active'"
+                        @mousedown.prevent
+                        @click="applyDraftFormat('italic')"
+                      >
+                        <Italic :size="16" />
+                      </button>
+                      <button
+                        class="icon-button"
+                        type="button"
+                        title="项目列表"
+                        aria-label="项目列表"
+                        :disabled="selectedDraft.status !== 'active'"
+                        @mousedown.prevent
+                        @click="applyDraftFormat('insertUnorderedList')"
+                      >
+                        <List :size="16" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div
+                    v-if="draftForm.bodyFormat === 'rich_text'"
+                    ref="draftRichEditor"
+                    class="draft-rich-editor"
+                    :contenteditable="selectedDraft.status === 'active'"
+                    role="textbox"
+                    aria-label="邮件正文"
+                    aria-multiline="true"
+                    @input="handleRichDraftInput"
+                  ></div>
+                  <textarea
+                    v-else
+                    v-model="draftForm.body"
+                    class="draft-plain-editor"
+                    rows="14"
+                    aria-label="邮件正文"
+                    :readonly="selectedDraft.status !== 'active'"
+                    @input="scheduleDraftSave"
+                  ></textarea>
+
+                  <section class="draft-attachments" aria-labelledby="draft-attachments-title">
+                    <div class="section-heading--row">
+                      <div>
+                        <h2 id="draft-attachments-title">附件</h2>
+                        <p>
+                          {{ selectedDraft.attachments.length }} 个 ·
+                          {{ formatFileSize(draftAttachmentTotalSize) }} / 20 MB
+                        </p>
+                      </div>
+                      <label
+                        v-if="selectedDraft.status === 'active'"
+                        class="button button--secondary button--compact draft-upload-button"
+                      >
+                        <Paperclip :size="15" />
+                        <span>{{ draftAction === 'attachment' ? '正在上传' : '添加附件' }}</span>
+                        <input
+                          type="file"
+                          multiple
+                          :disabled="draftAction !== null || draftSaveInFlight"
+                          @change="uploadDraftFiles"
+                        />
+                      </label>
+                    </div>
+                    <div v-if="selectedDraft.attachments.length" class="draft-attachment-list">
+                      <article
+                        v-for="attachment in selectedDraft.attachments"
+                        :key="attachment.id"
+                        class="draft-attachment-row"
+                      >
+                        <div>
+                          <strong>{{ attachment.fileName }}</strong>
+                          <span>{{ formatFileSize(attachment.sizeBytes) }}</span>
+                        </div>
+                        <div>
+                          <a
+                            class="button button--secondary button--compact"
+                            :href="draftAttachmentUrl(selectedDraft.id, attachment.id)"
+                          >
+                            下载
+                          </a>
+                          <button
+                            v-if="selectedDraft.status === 'active'"
+                            class="icon-button"
+                            type="button"
+                            title="移除附件"
+                            :aria-label="`移除附件 ${attachment.fileName}`"
+                            :disabled="draftSaveInFlight"
+                            @click="removeDraftAttachment(attachment.id)"
+                          >
+                            <X :size="16" />
+                          </button>
+                        </div>
+                      </article>
+                    </div>
+                    <p v-else class="empty-state">没有附件。</p>
+                  </section>
+                </form>
+              </template>
+              <div v-else-if="lastSendOperation" class="draft-send-result" aria-live="polite">
+                <div class="section-heading section-heading--row">
+                  <div>
+                    <p class="eyebrow">发信结果</p>
+                    <h2>{{ lastSendOperation.subject || '无主题' }}</h2>
+                  </div>
+                  <button
+                    class="button button--secondary button--compact"
+                    type="button"
+                    @click="refreshLastSendOperation"
+                  >
+                    刷新状态
+                  </button>
+                </div>
+                <p v-if="draftNotice" class="mailbox-notice" role="status">{{ draftNotice }}</p>
+                <dl class="send-result-summary">
+                  <div>
+                    <dt>发件地址</dt>
+                    <dd>{{ lastSendOperation.senderAddress }}</dd>
+                  </div>
+                  <div>
+                    <dt>邮件大小</dt>
+                    <dd>{{ formatFileSize(lastSendOperation.payloadSizeBytes) }}</dd>
+                  </div>
+                </dl>
+                <div class="send-recipient-list">
+                  <article v-for="recipient in lastSendOperation.recipients" :key="recipient.id">
+                    <div>
+                      <strong>{{ recipient.address }}</strong>
+                      <small>{{
+                        recipient.channel === 'internal' ? '系统内投递' : '域外投递'
+                      }}</small>
+                    </div>
+                    <span class="status-label" :data-status="recipient.status">
+                      {{ sendStatusLabel(recipient.status) }}
+                    </span>
+                  </article>
+                </div>
+              </div>
+              <div v-else class="mailbox-detail-placeholder">
+                <h2>选择或新建草稿</h2>
+              </div>
+            </article>
+          </template>
         </section>
 
         <div v-else class="settings-workspace">

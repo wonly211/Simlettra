@@ -409,8 +409,11 @@
 }
 
 .mailbox-message-row {
+  height: 76px;
   min-height: 76px;
+  max-height: 76px;
   padding: 10px 12px 10px 14px;
+  overflow: hidden;
   border-color: var(--color-border);
   background: var(--color-surface);
 }
@@ -638,7 +641,7 @@
 }
 
 .draft-workspace {
-  grid-template-columns: minmax(330px, 380px) minmax(0, 1fr);
+  grid-template-columns: 224px minmax(330px, 380px) minmax(0, 1fr);
   height: calc(100dvh - 56px);
   min-height: 0;
   overflow: hidden;
@@ -1178,7 +1181,9 @@
   }
 
   .mailbox-message-row {
+    height: 82px;
     min-height: 82px;
+    max-height: 82px;
     padding: 10px 8px 10px 14px;
   }
 
@@ -2439,7 +2444,7 @@
 
   .draft-workspace {
     display: grid;
-    grid-template-columns: 330px minmax(0, 1fr);
+    grid-template-columns: 190px 330px minmax(0, 1fr);
     min-height: 680px;
     border-bottom: 1px solid #cfd8de;
     background: #ffffff;
@@ -2763,7 +2768,7 @@
     }
 
     .draft-workspace {
-      grid-template-columns: 300px minmax(0, 1fr);
+      grid-template-columns: 170px 300px minmax(0, 1fr);
     }
 
     .draft-editor-panel {

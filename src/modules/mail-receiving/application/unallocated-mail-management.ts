@@ -2,6 +2,7 @@ import type {
   UnallocatedMailDetail,
   UnallocatedMailListItem,
 } from '../../../shared/contracts/unallocated-mail'
+import type { PersonalAddressSummary } from '../../../shared/contracts/personal-address-management'
 import type { StorageMode } from '../../../shared/contracts/storage-mode'
 import { createAuditEventStatement, type AuditContext } from '../../audit/public'
 import {
@@ -286,6 +287,7 @@ export async function claimUnallocatedAddress(options: {
   periodId: string
   addressId: string
   address: string
+  claimedAlias: PersonalAddressSummary
   claimedMessageCount: number
   newlyAddedMessageCount: number
   chargedBytes: number
@@ -543,6 +545,18 @@ export async function claimUnallocatedAddress(options: {
     periodId: period.period_id,
     addressId,
     address: period.canonical_address,
+    claimedAlias: {
+      id: addressId,
+      address: period.canonical_address,
+      domainId: period.domain_id,
+      domainDisplayName: period.domain_name,
+      role: 'alias',
+      customLabel: null,
+      isPinned: false,
+      sortOrder: period.next_sort_order,
+      isDefaultSender: false,
+      createdAt: new Date(now).toISOString(),
+    },
     claimedMessageCount: deliveries.length,
     newlyAddedMessageCount: deliveries.filter((delivery) => !delivery.existing_received_entry_id)
       .length,

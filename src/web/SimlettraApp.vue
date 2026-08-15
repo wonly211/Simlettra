@@ -4,14 +4,18 @@ import {
   ArchiveRestore,
   ArrowLeft,
   Bold,
+  ChevronDown,
   FilePlus2,
   Forward,
   Inbox,
   Italic,
   List,
+  LogOut,
   Mail,
   MailOpen,
   Mails,
+  Menu,
+  MoreHorizontal,
   OctagonAlert,
   Paperclip,
   PenLine,
@@ -20,6 +24,7 @@ import {
   ReplyAll,
   Search,
   Send,
+  Settings,
   SlidersHorizontal,
   Star,
   Trash2,
@@ -304,6 +309,26 @@ type PersonalAliasField = 'localPart' | 'domainId'
 type AddressPolicyField = keyof UpdateAddressPolicyRequest
 type OrganizationField = keyof CreateOrganizationRequest | 'primaryAddress' | 'successorUserId'
 type WorkspaceView = 'mailbox' | 'drafts' | 'settings'
+type MobileHistoryLayer = 'mail-detail' | 'draft-editor' | 'settings'
+type SettingsSection =
+  | 'account-security'
+  | 'addresses'
+  | 'forwarding'
+  | 'notifications'
+  | 'exports'
+  | 'organizations'
+  | 'account-lifecycle'
+  | 'health'
+  | 'receiving'
+  | 'resources'
+  | 'organization-policy'
+  | 'storage'
+  | 'address-policy'
+  | 'outbound'
+  | 'domains'
+  | 'alias-policy'
+  | 'invitations'
+  | 'users'
 type MailboxMode = 'assigned' | 'unallocated'
 type MessageBodyMode = 'html' | 'plain'
 type MailboxSearchDraft = Omit<MailboxSearchFilters, 'dateFrom' | 'dateTo'> & {
@@ -574,6 +599,17 @@ const organizationPolicyActionId = ref<string | null>(null)
 const organizationPolicyDrafts = reactive<Record<string, OrganizationPolicyDraft>>({})
 
 const workspaceView = ref<WorkspaceView>('mailbox')
+const settingsSection = ref<SettingsSection>('account-security')
+const mobileNavigationOpen = ref(false)
+const accountMenuOpen = ref(false)
+const mailboxMoreOpen = ref(false)
+const mailboxSelectionMode = ref(false)
+const messageActionsOpen = ref(false)
+const draftCopiesOpen = ref(false)
+const draftActionsOpen = ref(false)
+const mailboxSearchInput = ref<HTMLInputElement | null>(null)
+const mailboxDetailPanel = ref<HTMLElement | null>(null)
+const mailboxDetailHeading = ref<HTMLHeadingElement | null>(null)
 const mailboxMode = ref<MailboxMode>('assigned')
 const mailboxView = ref<MailboxView>('inbox')
 const mailboxScope = ref<MailboxScope>('all')
@@ -640,6 +676,8 @@ const draftForm = reactive<DraftEditorForm>({
 let draftSaveTimer: ReturnType<typeof setTimeout> | null = null
 let sendStatusTimer: ReturnType<typeof setTimeout> | null = null
 let draftEditVersion = 0
+let draftReturnWorkspace: WorkspaceView = 'drafts'
+let mailboxReturnFocus: HTMLElement | null = null
 
 const mailAutoRefreshScheduler = createMailAutoRefreshScheduler({
   refresh: performAutomaticMailRefresh,
@@ -794,14 +832,133 @@ const allLoadedMailboxItemsSelected = computed(
     mailboxItems.value.every((item) => selectedMailboxEntryIds.value.has(item.id)),
 )
 
+const draftAttachmentTotalSize = computed(() =>
+  (selectedDraft.value?.attachments ?? []).reduce(
+    (total, attachment) => total + attachment.sizeBytes,
+    0,
+  ),
+)
+
 const inboundActiveUsers = computed(() =>
   (inboundControl.value?.users ?? []).filter((user) => user.userStatus === 'active'),
 )
+
+function openWorkspace(view: WorkspaceView) {
+  workspaceView.value = view
+  mobileNavigationOpen.value = false
+  accountMenuOpen.value = false
+  messageActionsOpen.value = false
+}
+
+function openSettings(section: SettingsSection = settingsSection.value) {
+  const enteringSettings = workspaceView.value !== 'settings'
+  settingsSection.value = section
+  openWorkspace('settings')
+  if (enteringSettings) pushMobileHistoryLayer('settings')
+}
+
+function closeSettings() {
+  if (currentMobileHistoryLayer() === 'settings') {
+    window.history.back()
+    return
+  }
+  openWorkspace('mailbox')
+}
+
+function toggleMobileNavigation() {
+  if (workspaceView.value !== 'mailbox') openWorkspace('mailbox')
+  mobileNavigationOpen.value = !mobileNavigationOpen.value
+}
+
+async function focusMailboxSearch() {
+  openWorkspace('mailbox')
+  mailboxMode.value = 'assigned'
+  await nextTick()
+  mailboxSearchInput.value?.focus()
+}
+
+function usesMobileWorkspaceLayout(): boolean {
+  return window.matchMedia('(max-width: 720px)').matches
+}
+
+const mobileHistoryStateKey = '__simlettraMobileLayer'
+
+function currentMobileHistoryLayer(): MobileHistoryLayer | null {
+  const historyState = window.history.state
+  if (!historyState || typeof historyState !== 'object') return null
+  const layer = (historyState as Record<string, unknown>)[mobileHistoryStateKey]
+  return layer === 'mail-detail' || layer === 'draft-editor' || layer === 'settings' ? layer : null
+}
+
+function pushMobileHistoryLayer(layer: MobileHistoryLayer) {
+  if (!usesMobileWorkspaceLayout() || currentMobileHistoryLayer() === layer) return
+  const historyState = window.history.state
+  window.history.pushState(
+    {
+      ...(historyState && typeof historyState === 'object' ? historyState : {}),
+      [mobileHistoryStateKey]: layer,
+    },
+    '',
+  )
+}
+
+async function handleMobileHistoryNavigation() {
+  if (!usesMobileWorkspaceLayout()) return
+
+  if (workspaceView.value === 'drafts' && selectedDraft.value) {
+    if (!(await prepareDraftNavigation())) {
+      pushMobileHistoryLayer('draft-editor')
+      return
+    }
+    selectedDraft.value = null
+    if (draftReturnWorkspace === 'mailbox') openWorkspace('mailbox')
+    return
+  }
+
+  if (workspaceView.value === 'settings') {
+    openWorkspace('mailbox')
+    return
+  }
+
+  if (selectedMessage.value) {
+    await closeMailboxMessage()
+    return
+  }
+
+  if (selectedUnallocatedMessage.value) await closeUnallocatedMessage()
+}
+
+function rememberMailboxReturnFocus() {
+  const activeElement = document.activeElement
+  if (
+    activeElement instanceof HTMLElement &&
+    activeElement.closest('.mailbox-message-list') !== null
+  ) {
+    mailboxReturnFocus = activeElement
+  }
+}
+
+async function presentMailboxDetail() {
+  await nextTick()
+  if (mailboxDetailPanel.value) mailboxDetailPanel.value.scrollTop = 0
+  if (!usesMobileWorkspaceLayout()) return
+  mailboxDetailHeading.value?.focus({ preventScroll: true })
+  if (mailboxDetailPanel.value) mailboxDetailPanel.value.scrollTop = 0
+}
+
+async function restoreMailboxListFocus() {
+  if (!usesMobileWorkspaceLayout()) return
+  const returnTarget = mailboxReturnFocus
+  mailboxReturnFocus = null
+  await nextTick()
+  returnTarget?.focus({ preventScroll: true })
+}
 
 onMounted(async () => {
   document.addEventListener('visibilitychange', handleMailAutoRefreshVisibilityChange)
   window.addEventListener('online', handleMailAutoRefreshOnline)
   window.addEventListener('offline', handleMailAutoRefreshOffline)
+  window.addEventListener('popstate', handleMobileHistoryNavigation)
   await loadStatus()
 })
 
@@ -809,6 +966,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleMailAutoRefreshVisibilityChange)
   window.removeEventListener('online', handleMailAutoRefreshOnline)
   window.removeEventListener('offline', handleMailAutoRefreshOffline)
+  window.removeEventListener('popstate', handleMobileHistoryNavigation)
   mailAutoRefreshScheduler.stop()
   cancelDraftSaveTimer()
   cancelSendStatusTimer()
@@ -1250,7 +1408,7 @@ async function refreshDrafts() {
 
 async function enterDraftWorkspace(status: DraftStatus = 'active') {
   if (!(await prepareDraftNavigation())) return
-  workspaceView.value = 'drafts'
+  openWorkspace('drafts')
   if (draftListStatus.value !== status) {
     draftListStatus.value = status
     selectedDraft.value = null
@@ -1260,15 +1418,18 @@ async function enterDraftWorkspace(status: DraftStatus = 'active') {
 
 async function startNewDraft() {
   if (!(await prepareDraftNavigation())) return
+  const returnWorkspace = workspaceView.value
   draftAction.value = 'create'
   draftError.value = ''
   draftNotice.value = ''
   try {
     const response = await createServerDraft()
-    workspaceView.value = 'drafts'
+    openWorkspace('drafts')
     draftListStatus.value = 'active'
     await setSelectedDraft(response.data.draft)
     await refreshDrafts()
+    draftReturnWorkspace = returnWorkspace
+    pushMobileHistoryLayer('draft-editor')
   } catch (error) {
     handleDraftApiError(error, '无法新建草稿')
   } finally {
@@ -1288,10 +1449,12 @@ async function startRelatedDraft(composeKind: Exclude<DraftComposeKind, 'new'>) 
       composeKind,
       sourceMailboxEntryId: message.id,
     })
-    workspaceView.value = 'drafts'
+    openWorkspace('drafts')
     draftListStatus.value = 'active'
     await setSelectedDraft(response.data.draft)
     await refreshDrafts()
+    draftReturnWorkspace = 'mailbox'
+    pushMobileHistoryLayer('draft-editor')
   } catch (error) {
     mailboxError.value = error instanceof Error ? error.message : '无法从这封邮件建立草稿'
   } finally {
@@ -1302,12 +1465,17 @@ async function startRelatedDraft(composeKind: Exclude<DraftComposeKind, 'new'>) 
 async function openDraft(draftId: string) {
   if (selectedDraft.value?.id === draftId) return
   if (!(await prepareDraftNavigation())) return
+  const openingEditor = selectedDraft.value === null
   cancelDraftSaveTimer()
   draftAction.value = `open:${draftId}`
   draftError.value = ''
   draftNotice.value = ''
   try {
     await setSelectedDraft((await fetchDraftDetail(draftId)).data.draft)
+    if (openingEditor) {
+      draftReturnWorkspace = 'drafts'
+      pushMobileHistoryLayer('draft-editor')
+    }
   } catch (error) {
     handleDraftApiError(error, '无法打开草稿')
   } finally {
@@ -1322,6 +1490,8 @@ async function setSelectedDraft(draft: DraftDetail) {
   draftForm.to = recipientText(draft.recipients, 'to')
   draftForm.cc = recipientText(draft.recipients, 'cc')
   draftForm.bcc = recipientText(draft.recipients, 'bcc')
+  draftCopiesOpen.value = Boolean(draftForm.cc || draftForm.bcc)
+  draftActionsOpen.value = false
   draftForm.subject = draft.subject
   draftForm.bodyFormat = draft.bodyFormat
   draftForm.body = draft.body
@@ -1362,7 +1532,13 @@ async function prepareDraftNavigation(): Promise<boolean> {
 }
 
 async function closeSelectedDraft() {
-  if (await prepareDraftNavigation()) selectedDraft.value = null
+  if (currentMobileHistoryLayer() === 'draft-editor') {
+    window.history.back()
+    return
+  }
+  if (!(await prepareDraftNavigation())) return
+  selectedDraft.value = null
+  if (usesMobileWorkspaceLayout() && draftReturnWorkspace === 'mailbox') openWorkspace('mailbox')
 }
 
 async function saveDraftNow(): Promise<DraftDetail | null> {
@@ -1704,7 +1880,9 @@ async function clearUnallocatedMailSearch() {
 }
 
 async function selectMailboxMode(mode: MailboxMode) {
+  openWorkspace('mailbox')
   mailboxMode.value = mode
+  messageActionsOpen.value = false
   selectedMessage.value = null
   selectedConversationEntries.value = []
   selectedUnallocatedMessage.value = null
@@ -1726,6 +1904,7 @@ async function clearMailboxSearch() {
 }
 
 async function selectMailboxScope(scope: MailboxScope, organizationId = '') {
+  openWorkspace('mailbox')
   mailboxMode.value = 'assigned'
   mailboxScope.value = scope
   mailboxOrganizationId.value = organizationId
@@ -1736,6 +1915,7 @@ async function selectMailboxScope(scope: MailboxScope, organizationId = '') {
 }
 
 async function selectMailboxView(view: MailboxView) {
+  openWorkspace('mailbox')
   mailboxMode.value = 'assigned'
   mailboxView.value = view
   selectedMessage.value = null
@@ -1749,6 +1929,11 @@ function toggleMailboxSelection(entryId: string) {
   if (next.has(entryId)) next.delete(entryId)
   else next.add(entryId)
   selectedMailboxEntryIds.value = next
+}
+
+function toggleMailboxSelectionMode() {
+  mailboxSelectionMode.value = !mailboxSelectionMode.value
+  if (!mailboxSelectionMode.value) selectedMailboxEntryIds.value = new Set()
 }
 
 function toggleAllLoadedMailboxItems() {
@@ -1787,6 +1972,9 @@ async function runMailboxOrganizeAction(
 }
 
 async function openMailboxMessage(item: { id: string }) {
+  const openingFromList = selectedMessage.value === null
+  if (openingFromList) rememberMailboxReturnFocus()
+  messageActionsOpen.value = false
   selectedMessageLoading.value = true
   selectedMessage.value = null
   previewAttachmentId.value = null
@@ -1815,17 +2003,33 @@ async function openMailboxMessage(item: { id: string }) {
     mailboxError.value = error instanceof Error ? error.message : '无法读取邮件'
   } finally {
     selectedMessageLoading.value = false
+    if (selectedMessage.value) {
+      await presentMailboxDetail()
+      if (openingFromList) pushMobileHistoryLayer('mail-detail')
+    }
   }
 }
 
-function closeMailboxMessage() {
+function requestCloseMailboxMessage() {
+  if (currentMobileHistoryLayer() === 'mail-detail') {
+    window.history.back()
+    return
+  }
+  void closeMailboxMessage()
+}
+
+async function closeMailboxMessage() {
   selectedMessage.value = null
   selectedConversationEntries.value = []
   previewAttachmentId.value = null
   cancelMailboxPermanentDeletion()
+  messageActionsOpen.value = false
+  await restoreMailboxListFocus()
 }
 
 async function openUnallocatedMessage(item: { deliveryId: string }) {
+  const openingFromList = selectedUnallocatedMessage.value === null
+  if (openingFromList) rememberMailboxReturnFocus()
   selectedUnallocatedMessageLoading.value = true
   selectedUnallocatedMessage.value = null
   selectedMessage.value = null
@@ -1844,13 +2048,26 @@ async function openUnallocatedMessage(item: { deliveryId: string }) {
     mailboxError.value = error instanceof Error ? error.message : '无法读取未分配邮件'
   } finally {
     selectedUnallocatedMessageLoading.value = false
+    if (selectedUnallocatedMessage.value) {
+      await presentMailboxDetail()
+      if (openingFromList) pushMobileHistoryLayer('mail-detail')
+    }
   }
 }
 
-function closeUnallocatedMessage() {
+function requestCloseUnallocatedMessage() {
+  if (currentMobileHistoryLayer() === 'mail-detail') {
+    window.history.back()
+    return
+  }
+  void closeUnallocatedMessage()
+}
+
+async function closeUnallocatedMessage() {
   selectedUnallocatedMessage.value = null
   previewAttachmentId.value = null
   cancelUnallocatedClaim()
+  await restoreMailboxListFocus()
 }
 
 function requestUnallocatedClaim() {
@@ -4593,6 +4810,14 @@ function clearAuthentication() {
   draftForm.body = ''
   draftForm.attachmentIds = []
   workspaceView.value = 'mailbox'
+  settingsSection.value = 'account-security'
+  mobileNavigationOpen.value = false
+  accountMenuOpen.value = false
+  mailboxMoreOpen.value = false
+  mailboxSelectionMode.value = false
+  messageActionsOpen.value = false
+  draftCopiesOpen.value = false
+  draftActionsOpen.value = false
   mailboxMode.value = 'assigned'
   mailboxView.value = 'inbox'
   mailboxScope.value = 'all'
@@ -5037,28 +5262,65 @@ function normalizeDomainPreview(value: string): string {
 
 <template>
   <div class="app-shell">
-    <header class="app-header">
-      <div class="brand" aria-label="澄笺 Simlettra">
-        <span class="brand-mark" aria-hidden="true">澄</span>
-        <span class="brand-name">澄笺</span>
-        <span class="brand-divider" aria-hidden="true"></span>
-        <span class="brand-latin">Simlettra</span>
+    <header class="app-header" :class="{ 'app-header--authenticated': authentication }">
+      <div class="header-leading">
+        <button
+          v-if="authentication"
+          class="icon-button mobile-navigation-toggle"
+          type="button"
+          title="打开邮箱导航"
+          aria-label="打开邮箱导航"
+          :aria-expanded="mobileNavigationOpen"
+          @click="toggleMobileNavigation"
+        >
+          <Menu :size="20" />
+        </button>
+        <div class="brand" aria-label="澄笺 Simlettra">
+          <span class="brand-mark" aria-hidden="true">澄</span>
+          <span class="brand-name">澄笺</span>
+          <span class="brand-divider" aria-hidden="true"></span>
+          <span class="brand-latin">Simlettra</span>
+        </div>
       </div>
 
+      <button
+        v-if="authentication"
+        class="header-search-button"
+        type="button"
+        aria-label="搜索邮件"
+        @click="focusMailboxSearch"
+      >
+        <Search :size="17" />
+        <span>搜索邮件</span>
+      </button>
+
       <div v-if="authentication" class="header-account">
-        <span>{{ authentication.user.displayName }}</span>
         <button
-          class="button button--header"
+          class="header-account-trigger"
           type="button"
-          :disabled="sessionActionId !== null"
-          @click="exitCurrentSession"
+          :aria-expanded="accountMenuOpen"
+          @click="accountMenuOpen = !accountMenuOpen"
         >
-          退出
+          <span>
+            <strong>{{ authentication.user.displayName }}</strong>
+            <small>{{ authentication.user.primaryAddress }}</small>
+          </span>
+          <ChevronDown :size="16" />
         </button>
+        <div v-if="accountMenuOpen" class="header-account-menu">
+          <button type="button" @click="openSettings('account-security')">
+            <Settings :size="16" />
+            <span>设置</span>
+          </button>
+          <button type="button" :disabled="sessionActionId !== null" @click="exitCurrentSession">
+            <LogOut :size="16" />
+            <span>退出登录</span>
+          </button>
+        </div>
       </div>
     </header>
 
-    <main class="setup-page">
+    <main class="setup-page" :class="{ 'setup-page--authenticated': authentication }">
       <section v-if="loading" class="message-view" aria-live="polite">
         <p class="status-indicator">
           <span class="status-dot" aria-hidden="true"></span>正在连接系统
@@ -5180,48 +5442,44 @@ function normalizeDomainPreview(value: string): string {
         class="account-page"
         aria-labelledby="account-title"
       >
-        <div class="account-heading">
-          <p class="eyebrow">账号</p>
-          <h1 id="account-title">{{ authentication.user.displayName }}</h1>
-          <p class="lead">{{ authentication.user.primaryAddress }}</p>
+        <h1 id="account-title" class="visually-hidden">
+          {{ authentication.user.displayName }}的邮箱
+        </h1>
+
+        <div v-if="authError || accountNotice" class="workspace-feedback">
+          <p v-if="authError" class="form-alert" role="alert">{{ authError }}</p>
+          <p v-if="accountNotice" class="form-success" role="status">{{ accountNotice }}</p>
         </div>
 
-        <p v-if="authError" class="form-alert" role="alert">{{ authError }}</p>
-        <p v-if="accountNotice" class="form-success" role="status">{{ accountNotice }}</p>
-
-        <nav class="workspace-tabs" aria-label="主要区域">
-          <button
-            type="button"
-            :aria-current="
-              workspaceView === 'mailbox' || workspaceView === 'drafts' ? 'page' : undefined
-            "
-            @click="workspaceView = 'mailbox'"
-          >
-            邮件
-          </button>
-          <button
-            type="button"
-            :aria-current="workspaceView === 'settings' ? 'page' : undefined"
-            @click="workspaceView = 'settings'"
-          >
-            设置
-          </button>
-        </nav>
-
         <section v-if="workspaceView === 'mailbox'" class="mailbox-workspace" aria-label="收件箱">
-          <aside class="mailbox-folders" aria-label="邮箱视图与范围">
+          <aside
+            class="mailbox-folders"
+            :class="{ 'mailbox-folders--open': mobileNavigationOpen }"
+            aria-label="邮箱视图与范围"
+          >
             <div class="mailbox-folders-heading">
               <h2>邮件</h2>
-              <button
-                class="icon-button"
-                type="button"
-                title="刷新邮件"
-                aria-label="刷新邮件"
-                :disabled="mailboxLoading || unallocatedMailLoading"
-                @click="refreshActiveMailbox"
-              >
-                <RefreshCw :size="17" />
-              </button>
+              <div class="mailbox-folder-heading-actions">
+                <button
+                  class="icon-button"
+                  type="button"
+                  title="刷新邮件"
+                  aria-label="刷新邮件"
+                  :disabled="mailboxLoading || unallocatedMailLoading"
+                  @click="refreshActiveMailbox"
+                >
+                  <RefreshCw :size="17" />
+                </button>
+                <button
+                  class="icon-button mailbox-navigation-close"
+                  type="button"
+                  title="关闭邮箱导航"
+                  aria-label="关闭邮箱导航"
+                  @click="mobileNavigationOpen = false"
+                >
+                  <X :size="18" />
+                </button>
+              </div>
             </div>
             <button
               class="draft-compose-button"
@@ -5278,6 +5536,17 @@ function normalizeDomainPreview(value: string): string {
                 <span>归档</span>
               </button>
               <button
+                class="mailbox-more-toggle"
+                type="button"
+                :aria-expanded="mailboxMoreOpen"
+                @click="mailboxMoreOpen = !mailboxMoreOpen"
+              >
+                <MoreHorizontal :size="17" />
+                <span>更多</span>
+                <ChevronDown class="mailbox-more-chevron" :size="15" />
+              </button>
+              <button
+                v-show="mailboxMoreOpen"
                 type="button"
                 :aria-current="
                   mailboxMode === 'assigned' && mailboxView === 'spam' ? 'page' : undefined
@@ -5288,6 +5557,7 @@ function normalizeDomainPreview(value: string): string {
                 <span>垃圾邮件</span>
               </button>
               <button
+                v-show="mailboxMoreOpen"
                 type="button"
                 :aria-current="
                   mailboxMode === 'assigned' && mailboxView === 'trash' ? 'page' : undefined
@@ -5298,6 +5568,7 @@ function normalizeDomainPreview(value: string): string {
                 <span>垃圾箱</span>
               </button>
               <button
+                v-show="mailboxMoreOpen"
                 type="button"
                 :aria-current="
                   mailboxMode === 'assigned' && mailboxView === 'all' ? 'page' : undefined
@@ -5313,7 +5584,7 @@ function normalizeDomainPreview(value: string): string {
                 @click="selectMailboxMode('unallocated')"
               >
                 <Mail :size="17" />
-                <span>未分配来信</span>
+                <span>待认领邮件</span>
               </button>
             </nav>
             <p v-if="mailboxMode === 'assigned'" class="mailbox-folder-label">邮箱范围</p>
@@ -5352,11 +5623,26 @@ function normalizeDomainPreview(value: string): string {
             >
               {{ organization.name }}
             </button>
+            <div class="workspace-navigation-footer">
+              <button type="button" @click="openSettings()">
+                <Settings :size="17" />
+                <span>设置</span>
+              </button>
+            </div>
           </aside>
+
+          <button
+            v-if="mobileNavigationOpen"
+            class="mobile-navigation-backdrop"
+            type="button"
+            aria-label="关闭邮箱导航"
+            @click="mobileNavigationOpen = false"
+          ></button>
 
           <section
             class="mailbox-list-panel"
             :class="{
+              'mailbox-list-panel--selection-mode': mailboxSelectionMode,
               'mailbox-list-panel--hidden-mobile':
                 selectedMessage ||
                 selectedMessageLoading ||
@@ -5370,6 +5656,7 @@ function normalizeDomainPreview(value: string): string {
                 <div class="mailbox-search-primary">
                   <Search :size="16" aria-hidden="true" />
                   <input
+                    ref="mailboxSearchInput"
                     v-model="mailboxSearchDraft.body"
                     type="search"
                     maxlength="200"
@@ -5517,6 +5804,13 @@ function normalizeDomainPreview(value: string): string {
                   <h2 id="mailbox-list-title">{{ mailboxViewTitle }}</h2>
                   <p>{{ mailboxItems.length }} 封已加载</p>
                 </div>
+                <button
+                  class="button button--secondary button--compact mobile-selection-button"
+                  type="button"
+                  @click="toggleMailboxSelectionMode"
+                >
+                  {{ mailboxSelectionMode ? '完成' : '选择' }}
+                </button>
               </div>
               <div
                 v-if="selectedMailboxEntryIds.size"
@@ -5797,6 +6091,7 @@ function normalizeDomainPreview(value: string): string {
           </section>
 
           <article
+            ref="mailboxDetailPanel"
             class="mailbox-detail-panel"
             :class="{
               'mailbox-detail-panel--visible-mobile':
@@ -5805,7 +6100,7 @@ function normalizeDomainPreview(value: string): string {
                 selectedUnallocatedMessage ||
                 selectedUnallocatedMessageLoading,
             }"
-            aria-live="polite"
+            aria-label="邮件详情"
           >
             <p
               v-if="selectedMessageLoading || selectedUnallocatedMessageLoading"
@@ -5818,7 +6113,7 @@ function normalizeDomainPreview(value: string): string {
                 <button
                   class="button button--secondary button--compact mailbox-back-button"
                   type="button"
-                  @click="closeMailboxMessage"
+                  @click="requestCloseMailboxMessage"
                 >
                   <ArrowLeft :size="16" />
                   返回
@@ -5826,7 +6121,7 @@ function normalizeDomainPreview(value: string): string {
                 <div class="mailbox-detail-actions">
                   <button
                     v-if="selectedMessage.entryKind === 'received'"
-                    class="icon-button"
+                    class="button button--primary button--compact"
                     type="button"
                     title="回复"
                     aria-label="回复"
@@ -5834,10 +6129,11 @@ function normalizeDomainPreview(value: string): string {
                     @click="startRelatedDraft('reply')"
                   >
                     <Reply :size="17" />
+                    <span>回复</span>
                   </button>
                   <button
                     v-if="selectedMessage.entryKind === 'received'"
-                    class="icon-button"
+                    class="button button--secondary button--compact"
                     type="button"
                     title="回复全部"
                     aria-label="回复全部"
@@ -5845,9 +6141,11 @@ function normalizeDomainPreview(value: string): string {
                     @click="startRelatedDraft('reply_all')"
                   >
                     <ReplyAll :size="17" />
+                    <span>回复全部</span>
                   </button>
                   <button
-                    class="icon-button"
+                    v-if="messageActionsOpen"
+                    class="icon-button mailbox-secondary-action"
                     type="button"
                     title="转发"
                     aria-label="转发"
@@ -5857,7 +6155,8 @@ function normalizeDomainPreview(value: string): string {
                     <Forward :size="17" />
                   </button>
                   <button
-                    class="button button--secondary button--compact"
+                    v-if="messageActionsOpen"
+                    class="button button--secondary button--compact mailbox-secondary-action"
                     type="button"
                     :disabled="selectedMessageAction !== null || mailboxBulkAction !== null"
                     @click="toggleSelectedMessageRead"
@@ -5881,11 +6180,22 @@ function normalizeDomainPreview(value: string): string {
                     <Star :size="17" :fill="selectedMessage.isStarred ? 'currentColor' : 'none'" />
                   </button>
                   <button
+                    class="icon-button mailbox-more-actions-button"
+                    type="button"
+                    title="更多操作"
+                    aria-label="更多操作"
+                    :aria-expanded="messageActionsOpen"
+                    @click="messageActionsOpen = !messageActionsOpen"
+                  >
+                    <MoreHorizontal :size="18" />
+                  </button>
+                  <button
                     v-if="
+                      messageActionsOpen &&
                       selectedMessage.entryKind === 'received' &&
                       selectedMessage.location === 'inbox'
                     "
-                    class="icon-button"
+                    class="icon-button mailbox-secondary-action"
                     type="button"
                     :title="selectedMessage.isArchived ? '取消归档' : '归档'"
                     :aria-label="selectedMessage.isArchived ? '取消归档' : '归档'"
@@ -5902,10 +6212,11 @@ function normalizeDomainPreview(value: string): string {
                   </button>
                   <button
                     v-if="
+                      messageActionsOpen &&
                       selectedMessage.entryKind === 'received' &&
                       selectedMessage.location === 'inbox'
                     "
-                    class="icon-button"
+                    class="icon-button mailbox-secondary-action"
                     type="button"
                     title="标为垃圾邮件"
                     aria-label="标为垃圾邮件"
@@ -5915,8 +6226,8 @@ function normalizeDomainPreview(value: string): string {
                     <OctagonAlert :size="17" />
                   </button>
                   <button
-                    v-if="selectedMessage.location === 'spam'"
-                    class="icon-button"
+                    v-if="messageActionsOpen && selectedMessage.location === 'spam'"
+                    class="icon-button mailbox-secondary-action"
                     type="button"
                     title="不是垃圾邮件"
                     aria-label="不是垃圾邮件"
@@ -5926,7 +6237,8 @@ function normalizeDomainPreview(value: string): string {
                     <Undo2 :size="17" />
                   </button>
                   <button
-                    class="icon-button"
+                    v-if="messageActionsOpen"
+                    class="icon-button mailbox-secondary-action"
                     type="button"
                     :title="selectedMessage.location === 'trash' ? '恢复' : '移入垃圾箱'"
                     :aria-label="selectedMessage.location === 'trash' ? '恢复' : '移入垃圾箱'"
@@ -5945,9 +6257,11 @@ function normalizeDomainPreview(value: string): string {
                   </button>
                   <button
                     v-if="
-                      selectedMessage.location === 'trash' && selectedMessage.canPermanentlyDelete
+                      messageActionsOpen &&
+                      selectedMessage.location === 'trash' &&
+                      selectedMessage.canPermanentlyDelete
                     "
-                    class="button button--danger-quiet button--compact"
+                    class="button button--danger-quiet button--compact mailbox-secondary-action"
                     type="button"
                     :disabled="selectedMessageAction !== null || mailboxBulkAction !== null"
                     @click="requestMailboxPermanentDeletion"
@@ -6044,7 +6358,9 @@ function normalizeDomainPreview(value: string): string {
                 >
                   只有组织创建者可以为整个组织永久删除这封邮件。
                 </p>
-                <h2>{{ selectedMessage.subject || '（无主题）' }}</h2>
+                <h2 ref="mailboxDetailHeading" tabindex="-1">
+                  {{ selectedMessage.subject || '（无主题）' }}
+                </h2>
                 <dl class="mailbox-header-addresses">
                   <div
                     v-for="(address, index) in selectedMessage.addresses"
@@ -6130,21 +6446,19 @@ function normalizeDomainPreview(value: string): string {
               <div
                 v-if="selectedMessage.untrustedHtmlBody && selectedMessage.plainTextBody !== null"
                 class="message-body-tabs"
-                role="tablist"
+                role="group"
                 aria-label="正文格式"
               >
                 <button
                   type="button"
-                  role="tab"
-                  :aria-selected="selectedMessageBodyMode === 'html'"
+                  :aria-pressed="selectedMessageBodyMode === 'html'"
                   @click="selectedMessageBodyMode = 'html'"
                 >
                   HTML
                 </button>
                 <button
                   type="button"
-                  role="tab"
-                  :aria-selected="selectedMessageBodyMode === 'plain'"
+                  :aria-pressed="selectedMessageBodyMode === 'plain'"
                   @click="selectedMessageBodyMode = 'plain'"
                 >
                   纯文本
@@ -6206,7 +6520,7 @@ function normalizeDomainPreview(value: string): string {
                 <button
                   class="button button--secondary button--compact mailbox-back-button"
                   type="button"
-                  @click="closeUnallocatedMessage"
+                  @click="requestCloseUnallocatedMessage"
                 >
                   <ArrowLeft :size="16" />
                   返回
@@ -6259,7 +6573,9 @@ function normalizeDomainPreview(value: string): string {
 
               <header class="mailbox-detail-header">
                 <p class="mailbox-detail-scope">未分配来信</p>
-                <h2>{{ selectedUnallocatedMessage.subject || '（无主题）' }}</h2>
+                <h2 ref="mailboxDetailHeading" tabindex="-1">
+                  {{ selectedUnallocatedMessage.subject || '（无主题）' }}
+                </h2>
                 <dl class="mailbox-header-addresses">
                   <div
                     v-for="(address, index) in selectedUnallocatedMessage.addresses"
@@ -6299,21 +6615,19 @@ function normalizeDomainPreview(value: string): string {
                   selectedUnallocatedMessage.plainTextBody !== null
                 "
                 class="message-body-tabs"
-                role="tablist"
+                role="group"
                 aria-label="正文格式"
               >
                 <button
                   type="button"
-                  role="tab"
-                  :aria-selected="selectedMessageBodyMode === 'html'"
+                  :aria-pressed="selectedMessageBodyMode === 'html'"
                   @click="selectedMessageBodyMode = 'html'"
                 >
                   HTML
                 </button>
                 <button
                   type="button"
-                  role="tab"
-                  :aria-selected="selectedMessageBodyMode === 'plain'"
+                  :aria-pressed="selectedMessageBodyMode === 'plain'"
                   @click="selectedMessageBodyMode = 'plain'"
                 >
                   纯文本
@@ -6428,19 +6742,17 @@ function normalizeDomainPreview(value: string): string {
                 </button>
               </div>
             </header>
-            <div class="draft-status-tabs" role="tablist" aria-label="草稿状态">
+            <div class="draft-status-tabs" role="group" aria-label="草稿状态">
               <button
                 type="button"
-                role="tab"
-                :aria-selected="draftListStatus === 'active'"
+                :aria-pressed="draftListStatus === 'active'"
                 @click="enterDraftWorkspace('active')"
               >
                 草稿
               </button>
               <button
                 type="button"
-                role="tab"
-                :aria-selected="draftListStatus === 'trashed'"
+                :aria-pressed="draftListStatus === 'trashed'"
                 @click="enterDraftWorkspace('trashed')"
               >
                 已丢弃
@@ -6510,6 +6822,17 @@ function normalizeDomainPreview(value: string): string {
                   </button>
                   <button
                     v-if="selectedDraft.status === 'active'"
+                    class="icon-button"
+                    type="button"
+                    title="更多草稿操作"
+                    aria-label="更多草稿操作"
+                    :aria-expanded="draftActionsOpen"
+                    @click="draftActionsOpen = !draftActionsOpen"
+                  >
+                    <MoreHorizontal :size="18" />
+                  </button>
+                  <button
+                    v-if="selectedDraft.status === 'active' && draftActionsOpen"
                     class="button button--secondary button--compact"
                     type="button"
                     :disabled="draftSaveInFlight || draftAction !== null"
@@ -6518,7 +6841,7 @@ function normalizeDomainPreview(value: string): string {
                     保存
                   </button>
                   <button
-                    v-if="selectedDraft.status === 'active'"
+                    v-if="selectedDraft.status === 'active' && draftActionsOpen"
                     class="button button--danger-quiet button--compact"
                     type="button"
                     :disabled="draftAction !== null"
@@ -6578,7 +6901,15 @@ function normalizeDomainPreview(value: string): string {
                     @input="scheduleDraftSave"
                   />
                 </label>
-                <label class="draft-field-row">
+                <button
+                  class="draft-copy-toggle"
+                  type="button"
+                  :aria-expanded="draftCopiesOpen"
+                  @click="draftCopiesOpen = !draftCopiesOpen"
+                >
+                  {{ draftCopiesOpen ? '收起抄送与密送' : '添加抄送或密送' }}
+                </button>
+                <label v-show="draftCopiesOpen || Boolean(draftForm.cc)" class="draft-field-row">
                   <span>抄送</span>
                   <input
                     v-model="draftForm.cc"
@@ -6588,7 +6919,7 @@ function normalizeDomainPreview(value: string): string {
                     @input="scheduleDraftSave"
                   />
                 </label>
-                <label class="draft-field-row">
+                <label v-show="draftCopiesOpen || Boolean(draftForm.bcc)" class="draft-field-row">
                   <span>密送</span>
                   <input
                     v-model="draftForm.bcc"
@@ -6610,11 +6941,10 @@ function normalizeDomainPreview(value: string): string {
                 </label>
 
                 <div class="draft-body-toolbar">
-                  <div class="draft-format-switch" role="tablist" aria-label="正文格式">
+                  <div class="draft-format-switch" role="group" aria-label="正文格式">
                     <button
                       type="button"
-                      role="tab"
-                      :aria-selected="draftForm.bodyFormat === 'rich_text'"
+                      :aria-pressed="draftForm.bodyFormat === 'rich_text'"
                       :disabled="selectedDraft.status !== 'active'"
                       @click="changeDraftBodyFormat('rich_text')"
                     >
@@ -6622,8 +6952,7 @@ function normalizeDomainPreview(value: string): string {
                     </button>
                     <button
                       type="button"
-                      role="tab"
-                      :aria-selected="draftForm.bodyFormat === 'plain_text'"
+                      :aria-pressed="draftForm.bodyFormat === 'plain_text'"
                       :disabled="selectedDraft.status !== 'active'"
                       @click="changeDraftBodyFormat('plain_text')"
                     >
@@ -6691,7 +7020,10 @@ function normalizeDomainPreview(value: string): string {
                   <div class="section-heading--row">
                     <div>
                       <h2 id="draft-attachments-title">附件</h2>
-                      <p>{{ selectedDraft.attachments.length }} 个</p>
+                      <p>
+                        {{ selectedDraft.attachments.length }} 个 ·
+                        {{ formatFileSize(draftAttachmentTotalSize) }} / 20 MB
+                      </p>
                     </div>
                     <label
                       v-if="selectedDraft.status === 'active'"
@@ -6788,2544 +7120,2731 @@ function normalizeDomainPreview(value: string): string {
         </section>
 
         <div v-else class="settings-workspace">
-          <section class="sessions-section" aria-labelledby="sessions-title">
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="sessions-title">登录会话</h2>
-                <p>{{ sessions.length }} 个有效会话</p>
-              </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="sessionLoading || sessionActionId !== null"
-                @click="refreshSessions"
-              >
-                {{ sessionLoading ? '正在刷新' : '刷新' }}
-              </button>
-            </div>
-
-            <div v-if="sessions.length" class="session-list">
-              <article v-for="session in sessions" :key="session.id" class="session-row">
-                <div class="session-primary">
-                  <div class="session-title">
-                    <strong>{{ session.clientLabel }}</strong>
-                    <span v-if="session.current">当前会话</span>
-                  </div>
-                  <dl class="session-details">
-                    <div>
-                      <dt>最近活动</dt>
-                      <dd>{{ formatDate(session.lastActivityAt) }}</dd>
-                    </div>
-                    <div>
-                      <dt>登录时间</dt>
-                      <dd>{{ formatDate(session.createdAt) }}</dd>
-                    </div>
-                    <div>
-                      <dt>最晚失效</dt>
-                      <dd>{{ formatDate(session.absoluteExpiresAt) }}</dd>
-                    </div>
-                  </dl>
-                </div>
-                <button
-                  class="button button--danger-quiet button--compact"
-                  type="button"
-                  :disabled="sessionActionId !== null"
-                  @click="exitSession(session)"
-                >
-                  {{ sessionActionId === session.id ? '正在退出' : '退出会话' }}
-                </button>
-              </article>
-            </div>
-            <p v-else-if="!sessionLoading" class="empty-state">没有可显示的登录会话。</p>
-          </section>
-
-          <section class="account-settings-section" aria-labelledby="mail-exports-title">
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="mail-exports-title">邮件导出</h2>
-                <p>导出你有权访问的邮件，生成的 ZIP 文件默认保留 7 天。</p>
-              </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="mailExportLoading || mailExportAction !== null"
-                @click="refreshMailExportManagement()"
-              >
-                {{ mailExportLoading ? '正在刷新' : '刷新' }}
-              </button>
-            </div>
-            <p v-if="mailExportError" class="form-alert" role="alert">{{ mailExportError }}</p>
-            <p v-if="mailExportNotice" class="form-success" role="status">{{ mailExportNotice }}</p>
-
-            <form class="account-form" @submit.prevent="submitMailExport">
-              <div class="form-grid mail-export-create-grid">
-                <label class="field">
-                  <span>导出范围</span>
-                  <select v-model="mailExportScope" name="mail-export-scope">
-                    <option value="personal">我的个人邮件</option>
-                    <option v-if="mailExportOverview?.organizations.length" value="organization">
-                      组织邮件
-                    </option>
-                  </select>
-                </label>
-                <label v-if="mailExportScope === 'organization'" class="field">
-                  <span>组织</span>
-                  <select
-                    v-model="mailExportOrganizationId"
-                    name="mail-export-organization"
-                    required
-                  >
-                    <option
-                      v-for="organization in mailExportOverview?.organizations ?? []"
-                      :key="organization.id"
-                      :value="organization.id"
-                    >
-                      {{ organization.name }}
-                    </option>
-                  </select>
-                </label>
-              </div>
-              <div class="form-actions form-actions--end">
-                <button
-                  class="button button--primary"
-                  type="submit"
-                  :disabled="
-                    mailExportAction !== null ||
-                    (mailExportScope === 'organization' && !mailExportOrganizationId)
-                  "
-                >
-                  {{ mailExportAction === 'create' ? '正在创建' : '开始导出' }}
-                </button>
-              </div>
-            </form>
-
-            <div v-if="mailExportOverview?.runs.length" class="mail-export-list">
-              <article v-for="run in mailExportOverview.runs" :key="run.id" class="mail-export-row">
-                <div>
-                  <div class="mail-export-heading">
-                    <strong>{{ mailExportScopeLabel(run) }}</strong>
-                    <span class="status-label" :data-status="run.status">
-                      {{ mailExportStatusLabel(run.status) }}
-                    </span>
-                  </div>
-                  <small>
-                    {{ run.frozenMessageCount }} 封邮件 · {{ formatDate(run.createdAt) }}
-                    <span v-if="run.status === 'succeeded'"> · {{ run.artifactCount }} 个分卷</span>
-                  </small>
-                  <small v-if="run.errorCode" class="field-error">错误：{{ run.errorCode }}</small>
-                </div>
-                <div class="mail-export-actions">
-                  <a
-                    v-for="artifact in run.artifacts"
-                    :key="artifact.id"
-                    class="button button--secondary button--compact"
-                    :href="artifact.downloadUrl"
-                  >
-                    下载第 {{ artifact.sequenceNumber }} 卷
-                  </a>
-                  <button
-                    v-if="!['planned', 'running'].includes(run.status)"
-                    class="button button--danger-quiet button--compact"
-                    type="button"
-                    :disabled="mailExportAction !== null"
-                    @click="removeMailExport(run)"
-                  >
-                    {{ mailExportAction === `delete:${run.id}` ? '正在删除' : '删除记录' }}
-                  </button>
-                </div>
-              </article>
-            </div>
-            <p v-else-if="!mailExportLoading" class="empty-state">还没有邮件导出记录。</p>
-          </section>
-
-          <section class="account-settings-section" aria-labelledby="personal-addresses-title">
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="personal-addresses-title">我的邮箱地址</h2>
-                <p>
-                  已使用 {{ personalAddressOverview?.policy.aliasUsed ?? 0 }} /
-                  {{ personalAddressOverview?.policy.aliasLimit ?? 0 }}
-                  个个人别名
-                </p>
-              </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="personalAddressLoading || personalAddressActionId !== null"
-                @click="refreshPersonalAddressManagement"
-              >
-                {{ personalAddressLoading ? '正在刷新' : '刷新' }}
-              </button>
-            </div>
-
-            <form
-              v-if="personalAddressOverview?.policy.selfCreationEnabled"
-              class="account-form management-create-form"
-              @submit.prevent="submitPersonalAliasCreation"
+          <aside class="settings-navigation" aria-label="设置分类">
+            <button
+              class="settings-back-button"
+              type="button"
+              aria-label="返回邮件"
+              @click="closeSettings"
             >
-              <div class="form-grid address-create-grid">
-                <label class="field">
-                  <span>邮箱前缀</span>
-                  <input
-                    v-model="personalAliasForm.localPart"
-                    name="personal-alias-local-part"
-                    inputmode="email"
-                    autocapitalize="none"
-                    maxlength="64"
-                    required
-                    :aria-invalid="Boolean(personalAliasErrors.localPart)"
-                  />
-                  <small v-if="personalAliasErrors.localPart" class="field-error">{{
-                    personalAliasErrors.localPart
-                  }}</small>
-                </label>
-                <label class="field">
-                  <span>邮件域名</span>
-                  <select
-                    v-model="personalAliasForm.domainId"
-                    name="personal-alias-domain"
-                    required
-                    :aria-invalid="Boolean(personalAliasErrors.domainId)"
-                  >
-                    <option value="" disabled>选择域名</option>
-                    <option
-                      v-for="domain in personalAddressOverview.activeDomains"
-                      :key="domain.id"
-                      :value="domain.id"
-                    >
-                      {{ domain.canonicalName }}
-                    </option>
-                  </select>
-                  <small v-if="personalAliasErrors.domainId" class="field-error">{{
-                    personalAliasErrors.domainId
-                  }}</small>
-                </label>
-              </div>
-              <div class="form-actions form-actions--end">
-                <button
-                  class="button button--primary"
-                  type="submit"
-                  :disabled="
-                    personalAddressActionId !== null ||
-                    personalAddressOverview.policy.aliasUsed >=
-                      personalAddressOverview.policy.aliasLimit ||
-                    personalAddressOverview.activeDomains.length === 0
-                  "
-                >
-                  {{ personalAddressActionId === 'create:self' ? '正在创建' : '创建个人别名' }}
-                </button>
-              </div>
-            </form>
-            <p v-else-if="personalAddressOverview" class="form-notice">
-              管理员已关闭个人别名自助创建，现有地址仍可正常使用。
-            </p>
+              <ArrowLeft :size="16" />
+              <span>返回邮件</span>
+            </button>
 
-            <div v-if="personalAddressOverview?.addresses.length" class="personal-address-list">
-              <article
-                v-for="address in personalAddressOverview.addresses"
-                :key="address.id"
-                class="personal-address-row"
+            <label class="settings-mobile-select">
+              <span>当前设置</span>
+              <select v-model="settingsSection">
+                <optgroup label="个人">
+                  <option value="account-security">账户与安全</option>
+                  <option value="addresses">邮箱地址</option>
+                  <option value="forwarding">自动转发</option>
+                  <option value="notifications">外部通知</option>
+                  <option value="exports">邮件导出</option>
+                  <option value="account-lifecycle">账号注销</option>
+                </optgroup>
+                <optgroup label="协作">
+                  <option value="organizations">组织与邀请</option>
+                </optgroup>
+                <optgroup v-if="authentication.user.role === 'administrator'" label="系统管理">
+                  <option value="health">运行健康</option>
+                  <option value="users">用户管理</option>
+                  <option value="invitations">注册邀请码</option>
+                  <option value="domains">邮件域名</option>
+                  <option value="receiving">收信控制</option>
+                  <option value="outbound">域外发信</option>
+                  <option value="address-policy">地址策略</option>
+                  <option value="alias-policy">用户别名</option>
+                  <option value="organization-policy">组织配额</option>
+                  <option value="storage">存储配额</option>
+                  <option value="resources">免费资源</option>
+                </optgroup>
+              </select>
+            </label>
+
+            <p>个人</p>
+            <button
+              type="button"
+              :aria-current="settingsSection === 'account-security' ? 'page' : undefined"
+              @click="settingsSection = 'account-security'"
+            >
+              账户与安全
+            </button>
+            <button
+              type="button"
+              :aria-current="settingsSection === 'addresses' ? 'page' : undefined"
+              @click="settingsSection = 'addresses'"
+            >
+              邮箱地址
+            </button>
+            <button
+              type="button"
+              :aria-current="settingsSection === 'forwarding' ? 'page' : undefined"
+              @click="settingsSection = 'forwarding'"
+            >
+              自动转发
+            </button>
+            <button
+              type="button"
+              :aria-current="settingsSection === 'notifications' ? 'page' : undefined"
+              @click="settingsSection = 'notifications'"
+            >
+              外部通知
+            </button>
+            <button
+              type="button"
+              :aria-current="settingsSection === 'exports' ? 'page' : undefined"
+              @click="settingsSection = 'exports'"
+            >
+              邮件导出
+            </button>
+            <button
+              type="button"
+              :aria-current="settingsSection === 'account-lifecycle' ? 'page' : undefined"
+              @click="settingsSection = 'account-lifecycle'"
+            >
+              账号注销
+            </button>
+
+            <p>协作</p>
+            <button
+              type="button"
+              :aria-current="settingsSection === 'organizations' ? 'page' : undefined"
+              @click="settingsSection = 'organizations'"
+            >
+              组织与邀请
+            </button>
+
+            <template v-if="authentication.user.role === 'administrator'">
+              <p>系统管理</p>
+              <button
+                type="button"
+                :aria-current="settingsSection === 'health' ? 'page' : undefined"
+                @click="settingsSection = 'health'"
               >
-                <div class="personal-address-identity">
-                  <div class="personal-address-title">
-                    <strong>{{ address.address }}</strong>
-                    <span class="status-label">{{
-                      address.role === 'primary' ? '主地址' : '别名'
-                    }}</span>
-                    <span v-if="address.isDefaultSender" class="status-label">默认发件</span>
-                  </div>
-                  <p>{{ address.domainDisplayName }}</p>
-                </div>
+                运行健康
+              </button>
+              <button
+                type="button"
+                :aria-current="settingsSection === 'users' ? 'page' : undefined"
+                @click="settingsSection = 'users'"
+              >
+                用户管理
+              </button>
+              <button
+                type="button"
+                :aria-current="settingsSection === 'invitations' ? 'page' : undefined"
+                @click="settingsSection = 'invitations'"
+              >
+                注册邀请码
+              </button>
+              <button
+                type="button"
+                :aria-current="settingsSection === 'domains' ? 'page' : undefined"
+                @click="settingsSection = 'domains'"
+              >
+                邮件域名
+              </button>
+              <button
+                type="button"
+                :aria-current="settingsSection === 'receiving' ? 'page' : undefined"
+                @click="settingsSection = 'receiving'"
+              >
+                收信控制
+              </button>
+              <button
+                type="button"
+                :aria-current="settingsSection === 'outbound' ? 'page' : undefined"
+                @click="settingsSection = 'outbound'"
+              >
+                域外发信
+              </button>
+              <button
+                type="button"
+                :aria-current="settingsSection === 'address-policy' ? 'page' : undefined"
+                @click="settingsSection = 'address-policy'"
+              >
+                地址策略
+              </button>
+              <button
+                type="button"
+                :aria-current="settingsSection === 'alias-policy' ? 'page' : undefined"
+                @click="settingsSection = 'alias-policy'"
+              >
+                用户别名
+              </button>
+              <button
+                type="button"
+                :aria-current="settingsSection === 'organization-policy' ? 'page' : undefined"
+                @click="settingsSection = 'organization-policy'"
+              >
+                组织配额
+              </button>
+              <button
+                type="button"
+                :aria-current="settingsSection === 'storage' ? 'page' : undefined"
+                @click="settingsSection = 'storage'"
+              >
+                存储配额
+              </button>
+              <button
+                type="button"
+                :aria-current="settingsSection === 'resources' ? 'page' : undefined"
+                @click="settingsSection = 'resources'"
+              >
+                免费资源
+              </button>
+            </template>
+          </aside>
 
-                <div class="personal-address-preferences">
-                  <label class="field field--compact">
-                    <span>显示名称</span>
-                    <input
-                      v-model="addressPreferenceDraft(address).customLabel"
-                      :name="`address-label-${address.id}`"
-                      maxlength="80"
-                      placeholder="使用账号显示名称"
-                    />
-                  </label>
-                  <label class="checkbox-field personal-address-pin">
-                    <input v-model="addressPreferenceDraft(address).isPinned" type="checkbox" />
-                    <span>置顶</span>
-                  </label>
-                  <button
-                    class="button button--secondary button--compact"
-                    type="button"
-                    :disabled="personalAddressActionId !== null"
-                    @click="savePersonalAddressPreference(address)"
-                  >
-                    {{
-                      personalAddressActionId === `preference:${address.id}`
-                        ? '正在保存'
-                        : '保存设置'
-                    }}
-                  </button>
-                </div>
-
-                <div class="personal-address-actions">
-                  <button
-                    class="button button--secondary button--icon"
-                    type="button"
-                    title="上移"
-                    :aria-label="`上移 ${address.address}`"
-                    :disabled="
-                      personalAddressActionId !== null || !canMovePersonalAddress(address, 'up')
-                    "
-                    @click="changePersonalAddressOrder(address, 'up')"
-                  >
-                    ↑
-                  </button>
-                  <button
-                    class="button button--secondary button--icon"
-                    type="button"
-                    title="下移"
-                    :aria-label="`下移 ${address.address}`"
-                    :disabled="
-                      personalAddressActionId !== null || !canMovePersonalAddress(address, 'down')
-                    "
-                    @click="changePersonalAddressOrder(address, 'down')"
-                  >
-                    ↓
-                  </button>
-                  <button
-                    v-if="!address.isDefaultSender"
-                    class="button button--secondary button--compact"
-                    type="button"
-                    :disabled="personalAddressActionId !== null"
-                    @click="changeDefaultSender(address)"
-                  >
-                    {{
-                      personalAddressActionId === `default:${address.id}`
-                        ? '正在设置'
-                        : '设为默认发件'
-                    }}
-                  </button>
-                  <button
-                    v-if="address.role === 'alias'"
-                    class="button button--danger-quiet button--compact"
-                    type="button"
-                    :disabled="personalAddressActionId !== null"
-                    @click="requestPersonalAliasDeletion(address)"
-                  >
-                    删除
-                  </button>
-                </div>
-              </article>
-            </div>
-            <p v-else-if="!personalAddressLoading" class="empty-state">没有可显示的邮箱地址。</p>
-
+          <div class="settings-content">
             <section
-              v-if="aliasPendingDeletion && !aliasPendingDeletion.administratorAction"
-              class="destructive-confirmation"
-              aria-labelledby="personal-alias-deletion-title"
+              v-show="settingsSection === 'account-security'"
+              class="sessions-section"
+              aria-labelledby="sessions-title"
             >
-              <h2 id="personal-alias-deletion-title">删除个人别名</h2>
-              <p>
-                将删除 <strong>{{ aliasPendingDeletion.address.address }}</strong
-                >。{{ aliasDeletionImpactText() }}
-              </p>
-              <label class="checkbox-field">
-                <input v-model="aliasDeletionConfirmed" type="checkbox" />
-                <span>{{ aliasDeletionConfirmationText() }}</span>
-              </label>
-              <div class="confirmation-actions">
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="sessions-title">登录会话</h2>
+                  <p>{{ sessions.length }} 个有效会话</p>
+                </div>
                 <button
                   class="button button--secondary button--compact"
                   type="button"
-                  :disabled="personalAddressActionId !== null"
-                  @click="cancelAliasDeletion"
+                  :disabled="sessionLoading || sessionActionId !== null"
+                  @click="refreshSessions"
                 >
-                  取消
-                </button>
-                <button
-                  class="button button--danger-quiet button--compact"
-                  type="button"
-                  :disabled="!aliasDeletionConfirmed || personalAddressActionId !== null"
-                  @click="confirmAliasDeletion"
-                >
-                  {{
-                    personalAddressActionId === `delete:${aliasPendingDeletion.address.id}`
-                      ? '正在删除'
-                      : '确认删除'
-                  }}
+                  {{ sessionLoading ? '正在刷新' : '刷新' }}
                 </button>
               </div>
+
+              <div v-if="sessions.length" class="session-list">
+                <article v-for="session in sessions" :key="session.id" class="session-row">
+                  <div class="session-primary">
+                    <div class="session-title">
+                      <strong>{{ session.clientLabel }}</strong>
+                      <span v-if="session.current">当前会话</span>
+                    </div>
+                    <dl class="session-details">
+                      <div>
+                        <dt>最近活动</dt>
+                        <dd>{{ formatDate(session.lastActivityAt) }}</dd>
+                      </div>
+                      <div>
+                        <dt>登录时间</dt>
+                        <dd>{{ formatDate(session.createdAt) }}</dd>
+                      </div>
+                      <div>
+                        <dt>最晚失效</dt>
+                        <dd>{{ formatDate(session.absoluteExpiresAt) }}</dd>
+                      </div>
+                    </dl>
+                  </div>
+                  <button
+                    class="button button--danger-quiet button--compact"
+                    type="button"
+                    :disabled="sessionActionId !== null"
+                    @click="exitSession(session)"
+                  >
+                    {{ sessionActionId === session.id ? '正在退出' : '退出会话' }}
+                  </button>
+                </article>
+              </div>
+              <p v-else-if="!sessionLoading" class="empty-state">没有可显示的登录会话。</p>
             </section>
-          </section>
-
-          <section class="account-settings-section" aria-labelledby="organizations-title">
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="organizations-title">组织与邀请</h2>
-                <p>
-                  已创建 {{ organizationOverview?.policy.ownedOrganizationCount ?? 0 }} /
-                  {{ organizationOverview?.policy.organizationLimit ?? 0 }} 个组织
-                </p>
-              </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="organizationLoading || organizationActionId !== null"
-                @click="refreshOrganizationManagement"
-              >
-                {{ organizationLoading ? '正在刷新' : '刷新' }}
-              </button>
-            </div>
-
-            <div class="organization-preference-row">
-              <label class="field field--compact">
-                <span>收到组织邀请时</span>
-                <select
-                  v-model="organizationInvitationPolicyDraft"
-                  name="organization-invitation-policy"
-                >
-                  <option value="reject_all">全部拒绝</option>
-                  <option value="manual">每次确认</option>
-                  <option value="auto_accept">自动接受</option>
-                </select>
-              </label>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="organizationActionId !== null"
-                @click="saveOrganizationInvitationPolicy"
-              >
-                {{ organizationActionId === 'invitation-policy' ? '正在保存' : '保存邀请策略' }}
-              </button>
-            </div>
-
-            <div
-              v-if="organizationOverview?.pendingInvitations.length"
-              class="organization-invitation-list"
-            >
-              <article
-                v-for="invitation in organizationOverview.pendingInvitations"
-                :key="invitation.id"
-                class="organization-invitation-row"
-              >
-                <div>
-                  <strong>{{ invitation.organizationName }}</strong>
-                  <p>
-                    {{ invitation.sharedAddress }} ·
-                    {{ invitation.invitedByDisplayName }} 邀请你加入
-                  </p>
-                </div>
-                <div class="organization-row-actions">
-                  <button
-                    class="button button--secondary button--compact"
-                    type="button"
-                    :disabled="organizationActionId !== null"
-                    @click="respondToOrganizationInvitation(invitation.id, 'reject')"
-                  >
-                    {{ organizationActionId === `reject:${invitation.id}` ? '正在拒绝' : '拒绝' }}
-                  </button>
-                  <button
-                    class="button button--primary button--compact"
-                    type="button"
-                    :disabled="organizationActionId !== null"
-                    @click="respondToOrganizationInvitation(invitation.id, 'accept')"
-                  >
-                    {{ organizationActionId === `accept:${invitation.id}` ? '正在加入' : '接受' }}
-                  </button>
-                </div>
-              </article>
-            </div>
-
-            <form
-              class="account-form management-create-form"
-              @submit.prevent="submitOrganizationCreation"
-            >
-              <div class="form-grid">
-                <label class="field field--wide">
-                  <span>组织名称</span>
-                  <input
-                    v-model="organizationForm.name"
-                    name="new-organization-name"
-                    maxlength="120"
-                    required
-                    :aria-invalid="Boolean(organizationErrors.name)"
-                  />
-                  <small v-if="organizationErrors.name" class="field-error">{{
-                    organizationErrors.name
-                  }}</small>
-                </label>
-                <label class="field">
-                  <span>共享邮箱前缀</span>
-                  <input
-                    v-model="organizationForm.localPart"
-                    name="new-organization-local-part"
-                    inputmode="email"
-                    autocapitalize="none"
-                    maxlength="64"
-                    required
-                    :aria-invalid="Boolean(organizationErrors.localPart)"
-                  />
-                  <small v-if="organizationErrors.localPart" class="field-error">{{
-                    organizationErrors.localPart
-                  }}</small>
-                </label>
-                <label class="field">
-                  <span>邮件域名</span>
-                  <select
-                    v-model="organizationForm.domainId"
-                    name="new-organization-domain"
-                    required
-                    :aria-invalid="Boolean(organizationErrors.domainId)"
-                  >
-                    <option value="" disabled>选择域名</option>
-                    <option
-                      v-for="domain in organizationOverview?.activeDomains ?? []"
-                      :key="domain.id"
-                      :value="domain.id"
-                    >
-                      {{ domain.canonicalName }}
-                    </option>
-                  </select>
-                  <small v-if="organizationErrors.domainId" class="field-error">{{
-                    organizationErrors.domainId
-                  }}</small>
-                </label>
-              </div>
-              <div class="form-actions form-actions--end">
-                <button
-                  class="button button--primary"
-                  type="submit"
-                  :disabled="
-                    organizationActionId !== null ||
-                    !(organizationOverview?.activeDomains.length ?? 0) ||
-                    (organizationOverview?.policy.remainingOrganizationCount ?? 0) === 0
-                  "
-                >
-                  {{ organizationActionId === 'create' ? '正在建立' : '创建组织' }}
-                </button>
-              </div>
-            </form>
-
-            <div v-if="organizationOverview?.organizations.length" class="organization-list">
-              <article
-                v-for="organization in organizationOverview.organizations"
-                :key="organization.id"
-                class="organization-row"
-              >
-                <div class="organization-row-heading">
-                  <div>
-                    <div class="managed-user-title">
-                      <strong>{{ organization.name }}</strong>
-                      <span class="status-label">
-                        {{ organization.isCreator ? '创建者' : '成员' }}
-                      </span>
-                      <span
-                        v-if="organization.status === 'deletion_pending'"
-                        class="status-label status-label--disabled"
-                      >
-                        已停用
-                      </span>
-                    </div>
-                    <p>{{ organization.sharedAddress }}</p>
-                  </div>
-                  <div class="organization-row-actions">
-                    <button
-                      v-if="organization.status === 'deletion_pending'"
-                      class="button button--secondary button--compact"
-                      type="button"
-                      :disabled="organizationActionId !== null"
-                      @click="restorePendingOrganization(organization)"
-                    >
-                      {{
-                        organizationActionId === `restore:${organization.id}`
-                          ? '正在恢复'
-                          : '恢复组织'
-                      }}
-                    </button>
-                    <template v-else>
-                      <button
-                        class="button button--secondary button--compact"
-                        type="button"
-                        :disabled="organizationActionId !== null"
-                        @click="requestOrganizationAction(organization, 'leave')"
-                      >
-                        退出组织
-                      </button>
-                      <button
-                        v-if="organization.isCreator"
-                        class="button button--danger-quiet button--compact"
-                        type="button"
-                        :disabled="organizationActionId !== null"
-                        @click="requestOrganizationAction(organization, 'delete')"
-                      >
-                        删除组织
-                      </button>
-                    </template>
-                  </div>
-                </div>
-
-                <p
-                  v-if="organization.status === 'deletion_pending'"
-                  class="organization-pending-note"
-                >
-                  恢复期至
-                  {{
-                    organization.deletionDueAt ? formatDate(organization.deletionDueAt) : '已结束'
-                  }}
-                </p>
-
-                <div class="organization-member-list">
-                  <div v-for="member in organization.members" :key="member.membershipId">
-                    <span>
-                      <strong>{{ member.displayName }}</strong>
-                      <small>{{ member.primaryAddress }}</small>
-                    </span>
-                    <span class="status-label">{{
-                      member.role === 'creator' ? '创建者' : '成员'
-                    }}</span>
-                  </div>
-                </div>
-
-                <template v-if="organization.isCreator && organization.status === 'active'">
-                  <div class="organization-setting-row">
-                    <div>
-                      <strong>普通成员使用组织地址发信</strong>
-                      <small>创建者始终可以使用组织地址</small>
-                    </div>
-                    <button
-                      class="button button--secondary button--compact"
-                      type="button"
-                      :disabled="organizationActionId !== null"
-                      @click="toggleOrganizationSendingPermission(organization)"
-                    >
-                      {{
-                        organizationActionId === `sending:${organization.id}`
-                          ? '正在保存'
-                          : organization.membersCanSend
-                            ? '关闭'
-                            : '开启'
-                      }}
-                    </button>
-                  </div>
-
-                  <form
-                    class="organization-invite-form"
-                    @submit.prevent="submitOrganizationInvitation(organization)"
-                  >
-                    <label class="field field--compact">
-                      <span>邀请现有用户</span>
-                      <input
-                        v-model="organizationInvitationInputs[organization.id]"
-                        :name="`organization-invite-${organization.id}`"
-                        type="email"
-                        inputmode="email"
-                        autocapitalize="none"
-                        placeholder="对方的主邮箱地址"
-                        maxlength="320"
-                        required
-                      />
-                    </label>
-                    <button
-                      class="button button--secondary button--compact"
-                      type="submit"
-                      :disabled="organizationActionId !== null"
-                    >
-                      {{
-                        organizationActionId === `invite:${organization.id}`
-                          ? '正在邀请'
-                          : '发送邀请'
-                      }}
-                    </button>
-                  </form>
-
-                  <div
-                    v-if="organization.pendingInvitations.length"
-                    class="organization-pending-invitations"
-                  >
-                    <div v-for="invitation in organization.pendingInvitations" :key="invitation.id">
-                      <span>
-                        {{ invitation.invitedUserDisplayName }} ·
-                        {{ invitation.invitedUserPrimaryAddress }}
-                      </span>
-                      <button
-                        class="button button--danger-quiet button--compact"
-                        type="button"
-                        :disabled="organizationActionId !== null"
-                        @click="withdrawOrganizationInvitation(organization.id, invitation.id)"
-                      >
-                        {{
-                          organizationActionId === `revoke:${invitation.id}` ? '正在撤回' : '撤回'
-                        }}
-                      </button>
-                    </div>
-                  </div>
-                </template>
-              </article>
-            </div>
-            <p v-else-if="!organizationLoading" class="empty-state">尚未加入或创建组织。</p>
 
             <section
-              v-if="pendingOrganizationAction"
-              class="destructive-confirmation"
-              aria-labelledby="organization-action-title"
+              v-show="settingsSection === 'exports'"
+              class="account-settings-section"
+              aria-labelledby="mail-exports-title"
             >
-              <h2 id="organization-action-title">
-                {{ pendingOrganizationAction.kind === 'delete' ? '删除组织' : '退出组织' }}
-              </h2>
-              <p>
-                <strong>{{ pendingOrganizationAction.organization.name }}</strong
-                >：{{ organizationActionImpactText() }}
-              </p>
-              <label
-                v-if="
-                  pendingOrganizationAction.kind === 'leave' &&
-                  pendingOrganizationAction.organization.isCreator &&
-                  pendingOrganizationAction.organization.memberCount > 1
-                "
-                class="field organization-successor-field"
-              >
-                <span>继承创建者的成员</span>
-                <select v-model="pendingOrganizationAction.successorUserId" required>
-                  <option
-                    v-for="member in pendingOrganizationAction.organization.members.filter(
-                      (item) => item.userId !== authentication?.user.id,
-                    )"
-                    :key="member.userId"
-                    :value="member.userId"
-                  >
-                    {{ member.displayName }} · {{ member.primaryAddress }}
-                  </option>
-                </select>
-                <small v-if="organizationErrors.successorUserId" class="field-error">{{
-                  organizationErrors.successorUserId
-                }}</small>
-              </label>
-              <label class="checkbox-field">
-                <input v-model="pendingOrganizationAction.confirmed" type="checkbox" />
-                <span>我已了解这次操作对地址、成员和邮件访问的影响</span>
-              </label>
-              <div class="confirmation-actions">
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="mail-exports-title">邮件导出</h2>
+                  <p>导出你有权访问的邮件，生成的 ZIP 文件默认保留 7 天。</p>
+                </div>
                 <button
                   class="button button--secondary button--compact"
                   type="button"
-                  :disabled="organizationActionId !== null"
-                  @click="cancelOrganizationAction"
+                  :disabled="mailExportLoading || mailExportAction !== null"
+                  @click="refreshMailExportManagement()"
                 >
-                  取消
-                </button>
-                <button
-                  class="button button--danger-quiet button--compact"
-                  type="button"
-                  :disabled="
-                    !pendingOrganizationAction.confirmed ||
-                    organizationActionId !== null ||
-                    (pendingOrganizationAction.kind === 'leave' &&
-                      pendingOrganizationAction.organization.isCreator &&
-                      pendingOrganizationAction.organization.memberCount > 1 &&
-                      !pendingOrganizationAction.successorUserId)
-                  "
-                  @click="confirmOrganizationAction"
-                >
-                  {{ organizationActionId ? '正在处理' : '确认继续' }}
+                  {{ mailExportLoading ? '正在刷新' : '刷新' }}
                 </button>
               </div>
-            </section>
-          </section>
-
-          <section class="account-settings-section" aria-labelledby="forwarding-title">
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="forwarding-title">自动转发</h2>
-                <p>{{ forwardingOverview?.rules.length ?? 0 }} 条当前规则</p>
-              </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="forwardingLoading || forwardingAction !== null"
-                @click="refreshForwardingManagement"
-              >
-                {{ forwardingLoading ? '正在刷新' : '刷新' }}
-              </button>
-            </div>
-
-            <p v-if="forwardingError" class="form-alert" role="alert">
-              {{ forwardingError }}
-            </p>
-            <p v-if="forwardingNotice" class="form-success" role="status">
-              {{ forwardingNotice }}
-            </p>
-
-            <form
-              class="account-form management-create-form"
-              @submit.prevent="submitForwardingTarget"
-            >
-              <div class="form-grid">
-                <label class="field field--wide">
-                  <span>外部邮箱</span>
-                  <input
-                    v-model="forwardingTargetEmail"
-                    name="forwarding-target-email"
-                    type="email"
-                    inputmode="email"
-                    autocapitalize="none"
-                    autocomplete="email"
-                    maxlength="320"
-                    required
-                  />
-                </label>
-              </div>
-              <div class="form-actions form-actions--end">
-                <button
-                  class="button button--primary"
-                  type="submit"
-                  :disabled="forwardingAction !== null"
-                >
-                  {{ forwardingAction === 'target:create' ? '正在发送' : '发送验证码' }}
-                </button>
-              </div>
-            </form>
-
-            <div v-if="forwardingOverview?.targets.length" class="notification-subscription-list">
-              <article
-                v-for="target in forwardingOverview.targets"
-                :key="target.id"
-                class="notification-subscription-row forwarding-target-row"
-              >
-                <div class="notification-subscription-primary">
-                  <div class="managed-user-title">
-                    <strong>{{ target.emailAddress }}</strong>
-                    <span class="status-label">{{ externalEmailTargetStatusLabel(target) }}</span>
-                  </div>
-                  <small v-if="target.verifiedAt">
-                    验证于 {{ formatDate(target.verifiedAt) }}
-                  </small>
-                  <form
-                    v-if="
-                      target.status === 'pending' &&
-                      target.latestVerificationStatus === 'pending_input'
-                    "
-                    class="forwarding-code-form"
-                    @submit.prevent="submitForwardingVerification(target)"
-                  >
-                    <label class="field">
-                      <span>一次性验证码</span>
-                      <input
-                        v-model="forwardingVerificationCodes[target.id]"
-                        :name="`forwarding-code-${target.id}`"
-                        autocomplete="one-time-code"
-                        autocapitalize="characters"
-                        maxlength="19"
-                        required
-                      />
-                    </label>
-                    <button
-                      class="button button--primary button--compact"
-                      type="submit"
-                      :disabled="forwardingAction !== null"
-                    >
-                      验证
-                    </button>
-                  </form>
-                </div>
-                <div class="notification-subscription-actions">
-                  <button
-                    v-if="target.status !== 'verified'"
-                    class="button button--secondary button--compact"
-                    type="button"
-                    :disabled="forwardingAction !== null"
-                    @click="resendForwardingTarget(target)"
-                  >
-                    重发
-                  </button>
-                  <button
-                    class="button button--danger-quiet button--compact"
-                    type="button"
-                    :disabled="forwardingAction !== null"
-                    @click="removeForwardingTarget(target)"
-                  >
-                    删除
-                  </button>
-                </div>
-              </article>
-            </div>
-            <p v-else-if="!forwardingLoading" class="empty-state">尚未添加外部邮箱。</p>
-
-            <form
-              v-if="forwardingOverview?.targets.some((target) => target.status === 'verified')"
-              class="account-form management-create-form forwarding-rule-form"
-              @submit.prevent="submitForwardingRule"
-            >
-              <div class="section-heading">
-                <h3>{{ forwardingRuleForm.ruleId ? '编辑转发规则' : '建立转发规则' }}</h3>
-              </div>
-              <div class="form-grid">
-                <label class="field">
-                  <span>转发目标</span>
-                  <select v-model="forwardingRuleForm.targetId" required>
-                    <option
-                      v-for="target in forwardingOverview.targets.filter(
-                        (item) => item.status === 'verified',
-                      )"
-                      :key="target.id"
-                      :value="target.id"
-                    >
-                      {{ target.emailAddress }}
-                    </option>
-                  </select>
-                </label>
-                <label class="field">
-                  <span>邮件来源</span>
-                  <select v-model="forwardingRuleForm.scope">
-                    <option value="all_personal">全部个人地址</option>
-                    <option value="selected_personal_addresses">指定个人地址</option>
-                  </select>
-                </label>
-              </div>
-              <fieldset
-                v-if="forwardingRuleForm.scope === 'selected_personal_addresses'"
-                class="notification-scopes"
-              >
-                <legend>个人地址</legend>
-                <label
-                  v-for="address in forwardingOverview.addresses"
-                  :key="address.id"
-                  class="checkbox-field"
-                >
-                  <input
-                    v-model="forwardingRuleForm.addressIds"
-                    type="checkbox"
-                    :value="address.id"
-                  />
-                  <span>{{ address.address }}</span>
-                </label>
-              </fieldset>
-              <label class="checkbox-field">
-                <input v-model="forwardingRuleForm.enabled" type="checkbox" />
-                <span>保存后立即启用</span>
-              </label>
-              <div class="form-actions form-actions--end">
-                <button
-                  v-if="forwardingRuleForm.ruleId"
-                  class="button button--secondary"
-                  type="button"
-                  :disabled="forwardingAction !== null"
-                  @click="resetForwardingRuleForm"
-                >
-                  取消编辑
-                </button>
-                <button
-                  class="button button--primary"
-                  type="submit"
-                  :disabled="
-                    forwardingAction !== null ||
-                    !forwardingRuleForm.targetId ||
-                    (forwardingRuleForm.scope === 'selected_personal_addresses' &&
-                      forwardingRuleForm.addressIds.length === 0)
-                  "
-                >
-                  {{ forwardingAction === 'rule:save' ? '正在保存' : '保存规则' }}
-                </button>
-              </div>
-            </form>
-
-            <div v-if="forwardingOverview?.rules.length" class="notification-subscription-list">
-              <article
-                v-for="rule in forwardingOverview.rules"
-                :key="rule.id"
-                class="notification-subscription-row"
-              >
-                <div class="notification-subscription-primary">
-                  <div class="managed-user-title">
-                    <strong>{{ rule.targetAddress }}</strong>
-                    <span class="status-label">
-                      {{ rule.status === 'active' ? '启用' : '暂停' }}
-                    </span>
-                  </div>
-                  <small>
-                    {{
-                      rule.scope === 'all_personal'
-                        ? '全部个人地址'
-                        : forwardingOverview.addresses
-                            .filter((address) => rule.addressIds.includes(address.id))
-                            .map((address) => address.address)
-                            .join('、')
-                    }}
-                  </small>
-                </div>
-                <div class="notification-subscription-actions">
-                  <button
-                    class="button button--secondary button--compact"
-                    type="button"
-                    :disabled="forwardingAction !== null"
-                    @click="editForwardingRule(rule)"
-                  >
-                    编辑
-                  </button>
-                  <button
-                    class="button button--secondary button--compact"
-                    type="button"
-                    :disabled="forwardingAction !== null"
-                    @click="toggleForwardingRule(rule)"
-                  >
-                    {{ rule.status === 'active' ? '暂停' : '恢复' }}
-                  </button>
-                  <button
-                    class="button button--danger-quiet button--compact"
-                    type="button"
-                    :disabled="forwardingAction !== null"
-                    @click="removeForwardingRule(rule)"
-                  >
-                    删除
-                  </button>
-                </div>
-              </article>
-            </div>
-
-            <div v-if="forwardingOverview?.recentResults.length" class="notification-results">
-              <div class="section-heading"><h3>最近转发</h3></div>
-              <div class="notification-result-list">
-                <article v-for="operation in forwardingOverview.recentResults" :key="operation.id">
-                  <div>
-                    <strong>{{ operation.subject || '（无主题）' }}</strong>
-                    <small>
-                      {{ operation.actualAddress }} → {{ operation.targetAddress }} ·
-                      {{ formatDate(operation.createdAt) }}
-                    </small>
-                    <small v-if="operation.errorSummary">{{ operation.errorSummary }}</small>
-                  </div>
-                  <span class="status-label">
-                    {{ forwardingResultStatusLabel(operation.status) }}
-                  </span>
-                </article>
-              </div>
-            </div>
-          </section>
-
-          <section class="account-settings-section" aria-labelledby="notification-title">
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="notification-title">外部通知</h2>
-                <p>{{ notificationOverview?.subscriptions.length ?? 0 }} 个通知订阅</p>
-              </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="notificationLoading || notificationAction !== null"
-                @click="refreshNotificationManagement"
-              >
-                {{ notificationLoading ? '正在刷新' : '刷新' }}
-              </button>
-            </div>
-
-            <p v-if="notificationError" class="form-alert" role="alert">
-              {{ notificationError }}
-            </p>
-            <p v-if="notificationNotice" class="form-success" role="status">
-              {{ notificationNotice }}
-            </p>
-            <p
-              v-if="notificationOverview && !notificationOverview.encryptionConfigured"
-              class="form-alert"
-            >
-              部署配置中尚未设置 CONFIG_KEY。
-            </p>
-
-            <form
-              class="account-form management-create-form"
-              @submit.prevent="submitNotificationSubscription"
-            >
-              <div class="form-grid notification-form-grid">
-                <label class="field">
-                  <span>订阅名称</span>
-                  <input
-                    v-model="notificationForm.displayName"
-                    name="notification-name"
-                    maxlength="120"
-                    required
-                  />
-                </label>
-                <label class="field">
-                  <span>通知通道</span>
-                  <select
-                    v-model="notificationForm.channelType"
-                    name="notification-channel"
-                    @change="changeNotificationChannel"
-                  >
-                    <option value="ntfy">ntfy</option>
-                    <option value="gotify">Gotify</option>
-                    <option value="wxpusher">WxPusher</option>
-                    <option value="telegram">Telegram</option>
-                    <option value="bark">Bark</option>
-                  </select>
-                </label>
-                <label
-                  v-if="['ntfy', 'gotify', 'bark'].includes(notificationForm.channelType)"
-                  class="field field--wide"
-                >
-                  <span>服务地址</span>
-                  <input
-                    v-model="notificationForm.baseUrl"
-                    name="notification-base-url"
-                    type="url"
-                    inputmode="url"
-                    autocapitalize="none"
-                    placeholder="https://push.example.com"
-                    required
-                  />
-                </label>
-                <label
-                  v-if="notificationDestinationLabel(notificationForm.channelType)"
-                  class="field field--wide"
-                >
-                  <span>{{ notificationDestinationLabel(notificationForm.channelType) }}</span>
-                  <input
-                    v-model="notificationForm.destination"
-                    name="notification-destination"
-                    autocapitalize="none"
-                    maxlength="256"
-                    required
-                  />
-                </label>
-                <label class="field field--wide">
-                  <span>{{ notificationCredentialLabel(notificationForm.channelType) }}</span>
-                  <input
-                    v-model="notificationForm.credential"
-                    name="notification-credential"
-                    type="password"
-                    autocomplete="off"
-                    maxlength="4096"
-                    :required="notificationForm.channelType !== 'ntfy'"
-                  />
-                </label>
-              </div>
-
-              <fieldset class="notification-scopes">
-                <legend>邮件来源</legend>
-                <label class="checkbox-field">
-                  <input v-model="notificationForm.allPersonal" type="checkbox" />
-                  <span>全部个人邮箱</span>
-                </label>
-                <label
-                  v-for="scope in notificationOverview?.availableScopes ?? []"
-                  :key="`${scope.kind}:${scope.addressId}`"
-                  class="checkbox-field"
-                >
-                  <input
-                    v-model="notificationForm.addressIds"
-                    type="checkbox"
-                    :value="scope.addressId"
-                    :disabled="notificationForm.allPersonal && scope.kind === 'personal_address'"
-                  />
-                  <span>{{ scope.label }} · {{ scope.address }}</span>
-                </label>
-              </fieldset>
-
-              <div class="form-actions form-actions--end">
-                <button
-                  class="button button--primary"
-                  type="submit"
-                  :disabled="
-                    notificationAction !== null || !notificationOverview?.encryptionConfigured
-                  "
-                >
-                  {{ notificationAction === 'create' ? '正在建立' : '建立通知订阅' }}
-                </button>
-              </div>
-            </form>
-
-            <div
-              v-if="notificationOverview?.subscriptions.length"
-              class="notification-subscription-list"
-            >
-              <article
-                v-for="subscription in notificationOverview.subscriptions"
-                :key="subscription.id"
-                class="notification-subscription-row"
-              >
-                <div class="notification-subscription-primary">
-                  <div class="managed-user-title">
-                    <strong>{{ subscription.displayName }}</strong>
-                    <span class="status-label">
-                      {{ notificationChannelLabel(subscription.channelType) }} ·
-                      {{ subscription.status === 'active' ? '启用' : '暂停' }}
-                    </span>
-                  </div>
-                  <p v-if="subscription.baseUrl">{{ subscription.baseUrl }}</p>
-                  <p v-if="subscription.destination">{{ subscription.destination }}</p>
-                  <small>{{ subscription.scopes.map((scope) => scope.label).join('、') }}</small>
-                </div>
-                <div class="notification-subscription-actions">
-                  <button
-                    class="button button--secondary button--compact"
-                    type="button"
-                    :disabled="notificationAction !== null"
-                    @click="toggleNotificationSubscription(subscription)"
-                  >
-                    {{ subscription.status === 'active' ? '暂停' : '恢复' }}
-                  </button>
-                  <button
-                    class="button button--danger-quiet button--compact"
-                    type="button"
-                    :disabled="notificationAction !== null"
-                    @click="removeNotificationSubscription(subscription)"
-                  >
-                    删除
-                  </button>
-                </div>
-              </article>
-            </div>
-            <p v-else-if="!notificationLoading" class="empty-state">尚未建立通知订阅。</p>
-
-            <div v-if="notificationOverview?.recentOperations.length" class="notification-results">
-              <div class="section-heading"><h3>最近通知</h3></div>
-              <div class="notification-result-list">
-                <article
-                  v-for="operation in notificationOverview.recentOperations"
-                  :key="operation.id"
-                >
-                  <div>
-                    <strong>{{ operation.subject || '（无主题）' }}</strong>
-                    <small>
-                      {{ operation.subscriptionName }} · {{ formatDate(operation.createdAt) }}
-                    </small>
-                    <small v-if="operation.errorSummary">{{ operation.errorSummary }}</small>
-                  </div>
-                  <span class="status-label">
-                    {{ notificationOperationStatusLabel(operation.status) }}
-                  </span>
-                </article>
-              </div>
-            </div>
-          </section>
-
-          <section class="account-settings-section" aria-labelledby="password-title">
-            <div class="section-heading">
-              <h2 id="password-title">修改密码</h2>
-            </div>
-
-            <form class="account-form" @submit.prevent="submitPasswordChange">
-              <div class="form-grid">
-                <label class="field field--wide">
-                  <span>当前密码</span>
-                  <input
-                    v-model="passwordForm.currentPassword"
-                    :type="passwordForm.showPassword ? 'text' : 'password'"
-                    name="current-password"
-                    autocomplete="current-password"
-                    maxlength="128"
-                    required
-                    :aria-invalid="Boolean(passwordErrors.currentPassword)"
-                  />
-                  <small v-if="passwordErrors.currentPassword" class="field-error">{{
-                    passwordErrors.currentPassword
-                  }}</small>
-                </label>
-
-                <label class="field">
-                  <span>新密码</span>
-                  <input
-                    v-model="passwordForm.newPassword"
-                    :type="passwordForm.showPassword ? 'text' : 'password'"
-                    name="new-password"
-                    autocomplete="new-password"
-                    maxlength="128"
-                    required
-                    :aria-invalid="Boolean(passwordErrors.newPassword)"
-                  />
-                  <small v-if="passwordErrors.newPassword" class="field-error">{{
-                    passwordErrors.newPassword
-                  }}</small>
-                </label>
-
-                <label class="field">
-                  <span>确认新密码</span>
-                  <input
-                    v-model="passwordForm.confirmPassword"
-                    :type="passwordForm.showPassword ? 'text' : 'password'"
-                    name="confirm-new-password"
-                    autocomplete="new-password"
-                    maxlength="128"
-                    required
-                    :aria-invalid="Boolean(passwordErrors.confirmPassword)"
-                  />
-                  <small v-if="passwordErrors.confirmPassword" class="field-error">{{
-                    passwordErrors.confirmPassword
-                  }}</small>
-                </label>
-
-                <label class="checkbox-field field--wide">
-                  <input v-model="passwordForm.showPassword" type="checkbox" />
-                  <span>显示密码</span>
-                </label>
-                <label class="checkbox-field field--wide">
-                  <input v-model="passwordForm.revokeOtherSessions" type="checkbox" />
-                  <span>退出其他设备</span>
-                </label>
-              </div>
-
-              <div class="form-actions form-actions--end">
-                <button class="button button--primary" type="submit" :disabled="passwordSubmitting">
-                  {{ passwordSubmitting ? '正在修改' : '修改密码' }}
-                </button>
-              </div>
-            </form>
-          </section>
-
-          <section class="account-settings-section" aria-labelledby="account-lifecycle-title">
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="account-lifecycle-title">账号注销</h2>
-                <p>提交后立即退出所有设备，七天内可恢复，期满后永久清理账号数据。</p>
-              </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="accountLifecycleLoading || accountLifecycleSubmitting"
-                @click="refreshAccountLifecycle"
-              >
-                {{ accountLifecycleLoading ? '正在检查' : '检查状态' }}
-              </button>
-            </div>
-
-            <p v-if="accountLifecycleError" class="form-alert" role="alert">
-              {{ accountLifecycleError }}
-            </p>
-            <p v-if="accountLifecycleNotice" class="form-success" role="status">
-              {{ accountLifecycleNotice }}
-            </p>
-
-            <div v-if="accountLifecycle?.blockers.length" class="account-lifecycle-blockers">
-              <p class="form-notice">需要先处理以下事项：</p>
-              <ul>
-                <li
-                  v-for="blocker in accountLifecycle.blockers"
-                  :key="blocker.code + blocker.reference"
-                >
-                  <strong>{{ blocker.label }}</strong>
-                  <span v-if="blocker.code === 'administrator_transfer_required'">
-                    先将系统管理员身份转让给另一名已启用用户。
-                  </span>
-                  <span v-else>先转让或永久删除该组织。</span>
-                </li>
-              </ul>
-            </div>
-
-            <form
-              v-if="
-                authentication.user.role === 'administrator' &&
-                accountLifecycle?.blockers.some(
-                  (item) => item.code === 'administrator_transfer_required',
-                )
-              "
-              class="account-form account-lifecycle-form"
-              @submit.prevent="submitAdministratorTransfer"
-            >
-              <label class="field field--wide">
-                <span>新的系统管理员</span>
-                <select
-                  v-model="accountDeletionForm.successorUserId"
-                  :aria-invalid="Boolean(accountDeletionErrors.successorUserId)"
-                  required
-                >
-                  <option value="">请选择已启用用户</option>
-                  <option v-for="user in administratorSuccessors" :key="user.id" :value="user.id">
-                    {{ user.displayName }} · {{ user.primaryAddress }}
-                  </option>
-                </select>
-                <small v-if="accountDeletionErrors.successorUserId" class="field-error">
-                  {{ accountDeletionErrors.successorUserId }}
-                </small>
-                <small v-else-if="administratorSuccessors.length === 0" class="field-error">
-                  当前没有可继任的已启用用户，请先创建或启用一名用户。
-                </small>
-              </label>
-              <div class="form-actions form-actions--end">
-                <button
-                  class="button button--secondary"
-                  type="submit"
-                  :disabled="accountLifecycleSubmitting || administratorSuccessors.length === 0"
-                >
-                  {{ accountLifecycleSubmitting ? '正在转让' : '转让管理员身份' }}
-                </button>
-              </div>
-            </form>
-
-            <form
-              v-if="accountLifecycle?.canRequestDeletion"
-              class="account-form account-lifecycle-form"
-              @submit.prevent="submitAccountDeletion"
-            >
-              <p class="confirmation-note field--wide">
-                注销期间不能登录、收信或发信。七天后，个人邮件、草稿、地址和设置将永久清理。
+              <p v-if="mailExportError" class="form-alert" role="alert">{{ mailExportError }}</p>
+              <p v-if="mailExportNotice" class="form-success" role="status">
+                {{ mailExportNotice }}
               </p>
-              <label class="field field--wide">
-                <span>当前密码</span>
-                <input
-                  v-model="accountDeletionForm.currentPassword"
-                  :type="accountDeletionForm.showPassword ? 'text' : 'password'"
-                  name="account-deletion-password"
-                  autocomplete="current-password"
-                  maxlength="128"
-                  required
-                  :aria-invalid="Boolean(accountDeletionErrors.currentPassword)"
-                />
-                <small v-if="accountDeletionErrors.currentPassword" class="field-error">
-                  {{ accountDeletionErrors.currentPassword }}
-                </small>
-              </label>
-              <label class="checkbox-field field--wide">
-                <input v-model="accountDeletionForm.showPassword" type="checkbox" />
-                <span>显示密码</span>
-              </label>
-              <label class="checkbox-field field--wide">
-                <input v-model="accountDeletionForm.confirmed" type="checkbox" />
-                <span>我已了解七天冷静期和永久删除影响</span>
-              </label>
-              <small v-if="accountDeletionErrors.confirmation" class="field-error field--wide">
-                {{ accountDeletionErrors.confirmation }}
-              </small>
-              <div class="form-actions form-actions--end">
-                <button
-                  class="button button--danger-quiet"
-                  type="submit"
-                  :disabled="accountLifecycleSubmitting"
-                >
-                  {{ accountLifecycleSubmitting ? '正在提交' : '申请注销账号' }}
-                </button>
-              </div>
-            </form>
-          </section>
 
-          <section
-            v-if="authentication.user.role === 'administrator'"
-            class="account-settings-section"
-            aria-labelledby="operations-health-title"
-          >
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="operations-health-title">运行健康状态</h2>
-                <p>根据系统账本判断收信、发信、存储和定时维护是否需要处理。</p>
-              </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="operationsHealthLoading"
-                @click="refreshOperationsHealth"
-              >
-                {{ operationsHealthLoading ? '正在刷新' : '刷新' }}
-              </button>
-            </div>
-
-            <p v-if="operationsHealthError" class="form-alert" role="alert">
-              {{ operationsHealthError }}
-            </p>
-
-            <div v-if="operationsHealth" class="operations-health-list">
-              <article>
-                <div class="operations-health-heading">
-                  <strong>收信</strong>
-                  <span class="status-label" :data-health-status="operationsHealth.inbound.status">
-                    {{ operationsHealthStatusLabel(operationsHealth.inbound.status) }}
-                  </span>
-                </div>
-                <p>{{ operationsHealth.inbound.summary }}</p>
-                <dl class="operations-health-metrics">
-                  <div>
-                    <dt>最近接受</dt>
-                    <dd>{{ optionalDate(operationsHealth.inbound.lastAcceptedAt) }}</dd>
-                  </div>
-                  <div>
-                    <dt>最近可见</dt>
-                    <dd>{{ optionalDate(operationsHealth.inbound.lastVisibleAt) }}</dd>
-                  </div>
-                  <div>
-                    <dt>停滞操作</dt>
-                    <dd>{{ operationsHealth.inbound.stalledCount }}</dd>
-                  </div>
-                  <div>
-                    <dt>需检查结果</dt>
-                    <dd>{{ operationsHealth.inbound.attentionCount }}</dd>
-                  </div>
-                </dl>
-              </article>
-
-              <article>
-                <div class="operations-health-heading">
-                  <strong>发信</strong>
-                  <span class="status-label" :data-health-status="operationsHealth.outbound.status">
-                    {{ operationsHealthStatusLabel(operationsHealth.outbound.status) }}
-                  </span>
-                </div>
-                <p>{{ operationsHealth.outbound.summary }}</p>
-                <dl class="operations-health-metrics">
-                  <div>
-                    <dt>启用服务</dt>
-                    <dd>{{ operationsHealth.outbound.activeProviderCount }}</dd>
-                  </div>
-                  <div>
-                    <dt>启用路线</dt>
-                    <dd>{{ operationsHealth.outbound.activeRouteCount }}</dd>
-                  </div>
-                  <div>
-                    <dt>结果未知</dt>
-                    <dd>{{ operationsHealth.outbound.unknownRecipientCount }}</dd>
-                  </div>
-                  <div>
-                    <dt>最近活动</dt>
-                    <dd>{{ optionalDate(operationsHealth.outbound.lastActivityAt) }}</dd>
-                  </div>
-                </dl>
-              </article>
-
-              <article>
-                <div class="operations-health-heading">
-                  <strong>存储</strong>
-                  <span class="status-label" :data-health-status="operationsHealth.storage.status">
-                    {{ operationsHealthStatusLabel(operationsHealth.storage.status) }}
-                  </span>
-                </div>
-                <p>{{ operationsHealth.storage.summary }}</p>
-                <dl class="operations-health-metrics">
-                  <div>
-                    <dt>达到预警线</dt>
-                    <dd>{{ operationsHealth.storage.warningResourceCount }}</dd>
-                  </div>
-                  <div>
-                    <dt>达到停止线</dt>
-                    <dd>{{ operationsHealth.storage.stoppedResourceCount }}</dd>
-                  </div>
-                  <div>
-                    <dt>缺少快照</dt>
-                    <dd>{{ operationsHealth.storage.missingResourceCount }}</dd>
-                  </div>
-                  <div>
-                    <dt>最近快照</dt>
-                    <dd>{{ optionalDate(operationsHealth.storage.latestSnapshotAt) }}</dd>
-                  </div>
-                </dl>
-              </article>
-
-              <article>
-                <div class="operations-health-heading">
-                  <strong>定时维护</strong>
-                  <span
-                    class="status-label"
-                    :data-health-status="operationsHealth.scheduled.status"
-                  >
-                    {{ operationsHealthStatusLabel(operationsHealth.scheduled.status) }}
-                  </span>
-                </div>
-                <p>{{ operationsHealth.scheduled.summary }}</p>
-                <dl class="operations-health-metrics">
-                  <div>
-                    <dt>最近成功</dt>
-                    <dd>{{ optionalDate(operationsHealth.scheduled.lastSucceededAt) }}</dd>
-                  </div>
-                  <div>
-                    <dt>最近失败</dt>
-                    <dd>{{ optionalDate(operationsHealth.scheduled.lastFailedAt) }}</dd>
-                  </div>
-                  <div>
-                    <dt>需人工处理</dt>
-                    <dd>{{ operationsHealth.scheduled.needsAttentionTaskCount }}</dd>
-                  </div>
-                  <div>
-                    <dt>逾期任务</dt>
-                    <dd>{{ operationsHealth.scheduled.overdueTaskCount }}</dd>
-                  </div>
-                </dl>
-              </article>
-            </div>
-          </section>
-
-          <section
-            v-if="authentication.user.role === 'administrator'"
-            class="account-settings-section"
-            aria-labelledby="inbound-control-title"
-          >
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="inbound-control-title">收信控制</h2>
-                <p>管理暂停收信、全域收信和基础拒收规则</p>
-              </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="inboundControlLoading || inboundControlAction !== null"
-                @click="refreshInboundControl"
-              >
-                {{ inboundControlLoading ? '正在刷新' : '刷新' }}
-              </button>
-            </div>
-
-            <p v-if="inboundControlError" class="form-alert" role="alert">
-              {{ inboundControlError }}
-            </p>
-            <p v-if="inboundControlNotice" class="form-success" role="status">
-              {{ inboundControlNotice }}
-            </p>
-
-            <div class="inbound-control-subsection">
-              <div class="section-heading"><h3>域名与全域收信</h3></div>
-              <div v-if="inboundControl?.domains.length" class="inbound-control-list">
-                <article v-for="domain in inboundControl.domains" :key="domain.id">
-                  <div class="inbound-control-primary">
-                    <div class="managed-domain-title">
-                      <strong>{{ domain.displayName }}</strong>
-                      <span
-                        class="status-label"
-                        :class="{ 'status-label--disabled': domain.receiveStatus === 'paused' }"
-                      >
-                        {{ domain.receiveStatus === 'accepting' ? '正在收信' : '已暂停收信' }}
-                      </span>
-                    </div>
-                    <small> {{ domain.unallocatedMessageCount }} 封当前未分配来信 </small>
-                  </div>
-                  <label class="field field--compact">
-                    <span>未知地址</span>
+              <form class="account-form" @submit.prevent="submitMailExport">
+                <div class="form-grid mail-export-create-grid">
+                  <label class="field">
+                    <span>导出范围</span>
+                    <select v-model="mailExportScope" name="mail-export-scope">
+                      <option value="personal">我的个人邮件</option>
+                      <option v-if="mailExportOverview?.organizations.length" value="organization">
+                        组织邮件
+                      </option>
+                    </select>
+                  </label>
+                  <label v-if="mailExportScope === 'organization'" class="field">
+                    <span>组织</span>
                     <select
-                      :value="domain.catchAllMode"
-                      :disabled="inboundControlAction !== null || domain.domainStatus !== 'active'"
-                      @change="handleDomainCatchAllChange(domain.id, $event)"
+                      v-model="mailExportOrganizationId"
+                      name="mail-export-organization"
+                      required
                     >
-                      <option value="reject">拒收未创建地址</option>
-                      <option value="unallocated">保存为未分配来信</option>
-                    </select>
-                  </label>
-                  <button
-                    class="button button--secondary button--compact"
-                    type="button"
-                    :disabled="inboundControlAction !== null"
-                    @click="toggleInboundReceiveStatus('domain', domain.id, domain.receiveStatus)"
-                  >
-                    {{ domain.receiveStatus === 'accepting' ? '暂停收信' : '恢复收信' }}
-                  </button>
-                  <fieldset
-                    v-if="domain.catchAllMode === 'unallocated'"
-                    class="inbound-access-fieldset"
-                  >
-                    <legend>可查看未分配来信的用户</legend>
-                    <label v-for="user in inboundActiveUsers" :key="user.id">
-                      <input
-                        type="checkbox"
-                        :checked="domain.unallocatedAccessUserIds.includes(user.id)"
-                        :disabled="inboundControlAction !== null"
-                        @change="handleUnallocatedAccessChange(domain.id, user.id, $event)"
-                      />
-                      <span>{{ user.displayName }} · {{ user.primaryAddress }}</span>
-                    </label>
-                    <small v-if="inboundActiveUsers.length === 0">当前没有可授权的启用用户。</small>
-                  </fieldset>
-                </article>
-              </div>
-              <p v-else-if="!inboundControlLoading" class="empty-state">没有可配置的邮件域名。</p>
-            </div>
-
-            <div class="inbound-control-subsection">
-              <div class="section-heading"><h3>用户与地址收信状态</h3></div>
-              <div class="inbound-scope-columns">
-                <div>
-                  <h4>用户</h4>
-                  <div class="inbound-compact-list">
-                    <article v-for="user in inboundControl?.users ?? []" :key="user.id">
-                      <span>
-                        <strong>{{ user.displayName }}</strong>
-                        <small>{{ user.primaryAddress }}</small>
-                      </span>
-                      <button
-                        class="button button--secondary button--compact"
-                        type="button"
-                        :disabled="inboundControlAction !== null || user.userStatus !== 'active'"
-                        @click="toggleInboundReceiveStatus('user', user.id, user.receiveStatus)"
+                      <option
+                        v-for="organization in mailExportOverview?.organizations ?? []"
+                        :key="organization.id"
+                        :value="organization.id"
                       >
-                        {{ user.receiveStatus === 'accepting' ? '暂停' : '恢复' }}
-                      </button>
-                    </article>
-                  </div>
-                </div>
-                <div>
-                  <h4>邮箱地址</h4>
-                  <div class="inbound-compact-list">
-                    <article v-for="address in inboundControl?.addresses ?? []" :key="address.id">
-                      <span>
-                        <strong>{{ address.canonicalAddress }}</strong>
-                        <small>{{ address.ownerName }}</small>
-                      </span>
-                      <button
-                        class="button button--secondary button--compact"
-                        type="button"
-                        :disabled="inboundControlAction !== null"
-                        @click="
-                          toggleInboundReceiveStatus('address', address.id, address.receiveStatus)
-                        "
-                      >
-                        {{ address.receiveStatus === 'accepting' ? '暂停' : '恢复' }}
-                      </button>
-                    </article>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="inbound-control-subsection">
-              <div class="section-heading"><h3>拒收规则</h3></div>
-              <form
-                class="account-form management-create-form"
-                @submit.prevent="submitInboundRejectionRule"
-              >
-                <div class="form-grid">
-                  <label class="field">
-                    <span>匹配类型</span>
-                    <select v-model="inboundRejectionRuleForm.ruleType">
-                      <option value="sender_address">发件地址</option>
-                      <option value="sender_domain">发件域名</option>
-                      <option value="subject_keyword">主题关键词</option>
-                      <option value="body_keyword">正文关键词</option>
+                        {{ organization.name }}
+                      </option>
                     </select>
-                  </label>
-                  <label class="field">
-                    <span>匹配内容</span>
-                    <input v-model="inboundRejectionRuleForm.matchValue" maxlength="320" required />
                   </label>
                 </div>
                 <div class="form-actions form-actions--end">
                   <button
                     class="button button--primary"
                     type="submit"
-                    :disabled="inboundControlAction !== null"
+                    :disabled="
+                      mailExportAction !== null ||
+                      (mailExportScope === 'organization' && !mailExportOrganizationId)
+                    "
                   >
-                    {{ inboundControlAction === 'rule:create' ? '正在添加' : '添加规则' }}
+                    {{ mailExportAction === 'create' ? '正在创建' : '开始导出' }}
                   </button>
                 </div>
               </form>
-              <div v-if="inboundControl?.rules.length" class="inbound-rule-list">
-                <article v-for="rule in inboundControl.rules" :key="rule.id">
+
+              <div v-if="mailExportOverview?.runs.length" class="mail-export-list">
+                <article
+                  v-for="run in mailExportOverview.runs"
+                  :key="run.id"
+                  class="mail-export-row"
+                >
                   <div>
-                    <strong>{{ inboundRejectionRuleTypeLabel(rule.ruleType) }}</strong>
-                    <span>{{ rule.matchValue }}</span>
+                    <div class="mail-export-heading">
+                      <strong>{{ mailExportScopeLabel(run) }}</strong>
+                      <span class="status-label" :data-status="run.status">
+                        {{ mailExportStatusLabel(run.status) }}
+                      </span>
+                    </div>
+                    <small>
+                      {{ run.frozenMessageCount }} 封邮件 · {{ formatDate(run.createdAt) }}
+                      <span v-if="run.status === 'succeeded'">
+                        · {{ run.artifactCount }} 个分卷</span
+                      >
+                    </small>
+                    <small v-if="run.errorCode" class="field-error"
+                      >错误：{{ run.errorCode }}</small
+                    >
                   </div>
-                  <span
-                    class="status-label"
-                    :class="{ 'status-label--disabled': rule.status === 'paused' }"
+                  <div class="mail-export-actions">
+                    <a
+                      v-for="artifact in run.artifacts"
+                      :key="artifact.id"
+                      class="button button--secondary button--compact"
+                      :href="artifact.downloadUrl"
+                    >
+                      下载第 {{ artifact.sequenceNumber }} 卷
+                    </a>
+                    <button
+                      v-if="!['planned', 'running'].includes(run.status)"
+                      class="button button--danger-quiet button--compact"
+                      type="button"
+                      :disabled="mailExportAction !== null"
+                      @click="removeMailExport(run)"
+                    >
+                      {{ mailExportAction === `delete:${run.id}` ? '正在删除' : '删除记录' }}
+                    </button>
+                  </div>
+                </article>
+              </div>
+              <p v-else-if="!mailExportLoading" class="empty-state">还没有邮件导出记录。</p>
+            </section>
+
+            <section
+              v-show="settingsSection === 'addresses'"
+              class="account-settings-section"
+              aria-labelledby="personal-addresses-title"
+            >
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="personal-addresses-title">我的邮箱地址</h2>
+                  <p>
+                    已使用 {{ personalAddressOverview?.policy.aliasUsed ?? 0 }} /
+                    {{ personalAddressOverview?.policy.aliasLimit ?? 0 }}
+                    个个人别名
+                  </p>
+                </div>
+                <button
+                  class="button button--secondary button--compact"
+                  type="button"
+                  :disabled="personalAddressLoading || personalAddressActionId !== null"
+                  @click="refreshPersonalAddressManagement"
+                >
+                  {{ personalAddressLoading ? '正在刷新' : '刷新' }}
+                </button>
+              </div>
+
+              <form
+                v-if="personalAddressOverview?.policy.selfCreationEnabled"
+                class="account-form management-create-form"
+                @submit.prevent="submitPersonalAliasCreation"
+              >
+                <div class="form-grid address-create-grid">
+                  <label class="field">
+                    <span>邮箱前缀</span>
+                    <input
+                      v-model="personalAliasForm.localPart"
+                      name="personal-alias-local-part"
+                      inputmode="email"
+                      autocapitalize="none"
+                      maxlength="64"
+                      required
+                      :aria-invalid="Boolean(personalAliasErrors.localPart)"
+                    />
+                    <small v-if="personalAliasErrors.localPart" class="field-error">{{
+                      personalAliasErrors.localPart
+                    }}</small>
+                  </label>
+                  <label class="field">
+                    <span>邮件域名</span>
+                    <select
+                      v-model="personalAliasForm.domainId"
+                      name="personal-alias-domain"
+                      required
+                      :aria-invalid="Boolean(personalAliasErrors.domainId)"
+                    >
+                      <option value="" disabled>选择域名</option>
+                      <option
+                        v-for="domain in personalAddressOverview.activeDomains"
+                        :key="domain.id"
+                        :value="domain.id"
+                      >
+                        {{ domain.canonicalName }}
+                      </option>
+                    </select>
+                    <small v-if="personalAliasErrors.domainId" class="field-error">{{
+                      personalAliasErrors.domainId
+                    }}</small>
+                  </label>
+                </div>
+                <div class="form-actions form-actions--end">
+                  <button
+                    class="button button--primary"
+                    type="submit"
+                    :disabled="
+                      personalAddressActionId !== null ||
+                      personalAddressOverview.policy.aliasUsed >=
+                        personalAddressOverview.policy.aliasLimit ||
+                      personalAddressOverview.activeDomains.length === 0
+                    "
                   >
-                    {{ rule.status === 'active' ? '已启用' : '已暂停' }}
-                  </span>
+                    {{ personalAddressActionId === 'create:self' ? '正在创建' : '创建个人别名' }}
+                  </button>
+                </div>
+              </form>
+              <p v-else-if="personalAddressOverview" class="form-notice">
+                管理员已关闭个人别名自助创建，现有地址仍可正常使用。
+              </p>
+
+              <div v-if="personalAddressOverview?.addresses.length" class="personal-address-list">
+                <article
+                  v-for="address in personalAddressOverview.addresses"
+                  :key="address.id"
+                  class="personal-address-row"
+                >
+                  <div class="personal-address-identity">
+                    <div class="personal-address-title">
+                      <strong>{{ address.address }}</strong>
+                      <span class="status-label">{{
+                        address.role === 'primary' ? '主地址' : '别名'
+                      }}</span>
+                      <span v-if="address.isDefaultSender" class="status-label">默认发件</span>
+                    </div>
+                    <p>{{ address.domainDisplayName }}</p>
+                  </div>
+
+                  <div class="personal-address-preferences">
+                    <label class="field field--compact">
+                      <span>显示名称</span>
+                      <input
+                        v-model="addressPreferenceDraft(address).customLabel"
+                        :name="`address-label-${address.id}`"
+                        maxlength="80"
+                        placeholder="使用账号显示名称"
+                      />
+                    </label>
+                    <label class="checkbox-field personal-address-pin">
+                      <input v-model="addressPreferenceDraft(address).isPinned" type="checkbox" />
+                      <span>置顶</span>
+                    </label>
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="personalAddressActionId !== null"
+                      @click="savePersonalAddressPreference(address)"
+                    >
+                      {{
+                        personalAddressActionId === `preference:${address.id}`
+                          ? '正在保存'
+                          : '保存设置'
+                      }}
+                    </button>
+                  </div>
+
+                  <div class="personal-address-actions">
+                    <button
+                      class="button button--secondary button--icon"
+                      type="button"
+                      title="上移"
+                      :aria-label="`上移 ${address.address}`"
+                      :disabled="
+                        personalAddressActionId !== null || !canMovePersonalAddress(address, 'up')
+                      "
+                      @click="changePersonalAddressOrder(address, 'up')"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      class="button button--secondary button--icon"
+                      type="button"
+                      title="下移"
+                      :aria-label="`下移 ${address.address}`"
+                      :disabled="
+                        personalAddressActionId !== null || !canMovePersonalAddress(address, 'down')
+                      "
+                      @click="changePersonalAddressOrder(address, 'down')"
+                    >
+                      ↓
+                    </button>
+                    <button
+                      v-if="!address.isDefaultSender"
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="personalAddressActionId !== null"
+                      @click="changeDefaultSender(address)"
+                    >
+                      {{
+                        personalAddressActionId === `default:${address.id}`
+                          ? '正在设置'
+                          : '设为默认发件'
+                      }}
+                    </button>
+                    <button
+                      v-if="address.role === 'alias'"
+                      class="button button--danger-quiet button--compact"
+                      type="button"
+                      :disabled="personalAddressActionId !== null"
+                      @click="requestPersonalAliasDeletion(address)"
+                    >
+                      删除
+                    </button>
+                  </div>
+                </article>
+              </div>
+              <p v-else-if="!personalAddressLoading" class="empty-state">没有可显示的邮箱地址。</p>
+
+              <section
+                v-if="aliasPendingDeletion && !aliasPendingDeletion.administratorAction"
+                class="destructive-confirmation"
+                aria-labelledby="personal-alias-deletion-title"
+              >
+                <h2 id="personal-alias-deletion-title">删除个人别名</h2>
+                <p>
+                  将删除 <strong>{{ aliasPendingDeletion.address.address }}</strong
+                  >。{{ aliasDeletionImpactText() }}
+                </p>
+                <label class="checkbox-field">
+                  <input v-model="aliasDeletionConfirmed" type="checkbox" />
+                  <span>{{ aliasDeletionConfirmationText() }}</span>
+                </label>
+                <div class="confirmation-actions">
                   <button
                     class="button button--secondary button--compact"
                     type="button"
-                    :disabled="inboundControlAction !== null"
-                    @click="toggleInboundRejectionRule(rule.id, rule.status)"
+                    :disabled="personalAddressActionId !== null"
+                    @click="cancelAliasDeletion"
                   >
-                    {{ rule.status === 'active' ? '暂停' : '恢复' }}
+                    取消
                   </button>
                   <button
                     class="button button--danger-quiet button--compact"
                     type="button"
-                    :disabled="inboundControlAction !== null"
-                    @click="removeInboundRejectionRule(rule.id)"
+                    :disabled="!aliasDeletionConfirmed || personalAddressActionId !== null"
+                    @click="confirmAliasDeletion"
                   >
-                    删除
+                    {{
+                      personalAddressActionId === `delete:${aliasPendingDeletion.address.id}`
+                        ? '正在删除'
+                        : '确认删除'
+                    }}
                   </button>
-                </article>
-              </div>
-              <p v-else-if="!inboundControlLoading" class="empty-state">当前没有拒收规则。</p>
-            </div>
-          </section>
-
-          <section
-            v-if="authentication.user.role === 'administrator'"
-            class="account-settings-section"
-            aria-labelledby="platform-resources-title"
-          >
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="platform-resources-title">Cloudflare 免费资源</h2>
-                <p>达到停止线前阻止继续增加存储，现有邮件仍可阅读和清理。</p>
-              </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="platformResourceLoading || platformResourceAction !== null"
-                @click="refreshPlatformResourceUsage"
-              >
-                {{ platformResourceAction === 'refresh' ? '正在刷新' : '刷新用量' }}
-              </button>
-            </div>
-
-            <p v-if="platformResourceError" class="form-alert" role="alert">
-              {{ platformResourceError }}
-            </p>
-            <p v-if="platformResourceNotice" class="form-success" role="status">
-              {{ platformResourceNotice }}
-            </p>
-
-            <div v-if="platformResourceOverview" class="platform-resource-list">
-              <article
-                v-for="resource in platformResourceOverview.resources"
-                :key="resource.resourceKind"
-                class="platform-resource-row"
-              >
-                <div class="platform-resource-heading">
-                  <div>
-                    <strong>{{ platformResourceLabel(resource.resourceKind) }}</strong>
-                    <small>{{ platformResourceSourceLabel(resource) }}</small>
-                  </div>
-                  <span
-                    class="status-label"
-                    :class="{ 'status-label--warning': resource.warningReached }"
-                  >
-                    {{ platformResourceStatusLabel(resource) }}
-                  </span>
                 </div>
-                <progress :value="platformResourceUsagePercent(resource)" max="100"></progress>
-                <dl class="platform-resource-metrics">
-                  <div>
-                    <dt>账号已用 / 免费上限</dt>
-                    <dd>
-                      {{
-                        resource.accountUsedBytes === null
-                          ? '不可用'
-                          : `${formatStorageSize(resource.accountUsedBytes)} / ${formatStorageSize(resource.freeLimitBytes)}`
-                      }}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>当前资源已用 / 自身上限</dt>
-                    <dd>
-                      {{
-                        resource.simlettraUsedBytes === null
-                          ? '不可用'
-                          : `${formatStorageSize(resource.simlettraUsedBytes)} / ${formatStorageSize(resource.currentResourceLimitBytes)}`
-                      }}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>账号剩余</dt>
-                    <dd>{{ formatOptionalStorageSize(resource.remainingBytes) }}</dd>
-                  </div>
-                  <div>
-                    <dt>当前资源剩余</dt>
-                    <dd>{{ formatOptionalStorageSize(resource.currentResourceRemainingBytes) }}</dd>
-                  </div>
-                  <div>
-                    <dt>更新时间</dt>
-                    <dd>{{ formatDate(resource.fetchedAt) }}</dd>
-                  </div>
-                </dl>
-                <form
-                  class="platform-resource-thresholds"
-                  @submit.prevent="submitPlatformResourceThreshold(resource.resourceKind)"
+              </section>
+            </section>
+
+            <section
+              v-show="settingsSection === 'organizations'"
+              class="account-settings-section"
+              aria-labelledby="organizations-title"
+            >
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="organizations-title">组织与邀请</h2>
+                  <p>
+                    已创建 {{ organizationOverview?.policy.ownedOrganizationCount ?? 0 }} /
+                    {{ organizationOverview?.policy.organizationLimit ?? 0 }} 个组织
+                  </p>
+                </div>
+                <button
+                  class="button button--secondary button--compact"
+                  type="button"
+                  :disabled="organizationLoading || organizationActionId !== null"
+                  @click="refreshOrganizationManagement"
                 >
-                  <label class="field field--compact">
-                    <span>预警比例</span>
-                    <input
-                      v-model.number="
-                        platformResourceThresholdDrafts[resource.resourceKind].warningPercent
-                      "
-                      type="number"
-                      min="1"
-                      max="100"
-                      step="1"
-                      inputmode="numeric"
-                      required
-                    />
-                  </label>
-                  <label class="field field--compact">
-                    <span>停止比例</span>
-                    <input
-                      v-model.number="
-                        platformResourceThresholdDrafts[resource.resourceKind].stopPercent
-                      "
-                      type="number"
-                      min="1"
-                      max="100"
-                      step="1"
-                      inputmode="numeric"
-                      required
-                    />
-                  </label>
-                  <div class="platform-resource-threshold-action">
-                    <small v-if="resource.dataSource === 'local_estimate'">
-                      仅本地估算时，有效停止比例最高为 80%。
-                    </small>
+                  {{ organizationLoading ? '正在刷新' : '刷新' }}
+                </button>
+              </div>
+
+              <div class="organization-preference-row">
+                <label class="field field--compact">
+                  <span>收到组织邀请时</span>
+                  <select
+                    v-model="organizationInvitationPolicyDraft"
+                    name="organization-invitation-policy"
+                  >
+                    <option value="reject_all">全部拒绝</option>
+                    <option value="manual">每次确认</option>
+                    <option value="auto_accept">自动接受</option>
+                  </select>
+                </label>
+                <button
+                  class="button button--secondary button--compact"
+                  type="button"
+                  :disabled="organizationActionId !== null"
+                  @click="saveOrganizationInvitationPolicy"
+                >
+                  {{ organizationActionId === 'invitation-policy' ? '正在保存' : '保存邀请策略' }}
+                </button>
+              </div>
+
+              <div
+                v-if="organizationOverview?.pendingInvitations.length"
+                class="organization-invitation-list"
+              >
+                <article
+                  v-for="invitation in organizationOverview.pendingInvitations"
+                  :key="invitation.id"
+                  class="organization-invitation-row"
+                >
+                  <div>
+                    <strong>{{ invitation.organizationName }}</strong>
+                    <p>
+                      {{ invitation.sharedAddress }} ·
+                      {{ invitation.invitedByDisplayName }} 邀请你加入
+                    </p>
+                  </div>
+                  <div class="organization-row-actions">
                     <button
                       class="button button--secondary button--compact"
-                      type="submit"
-                      :disabled="platformResourceAction !== null"
+                      type="button"
+                      :disabled="organizationActionId !== null"
+                      @click="respondToOrganizationInvitation(invitation.id, 'reject')"
                     >
+                      {{ organizationActionId === `reject:${invitation.id}` ? '正在拒绝' : '拒绝' }}
+                    </button>
+                    <button
+                      class="button button--primary button--compact"
+                      type="button"
+                      :disabled="organizationActionId !== null"
+                      @click="respondToOrganizationInvitation(invitation.id, 'accept')"
+                    >
+                      {{ organizationActionId === `accept:${invitation.id}` ? '正在加入' : '接受' }}
+                    </button>
+                  </div>
+                </article>
+              </div>
+
+              <form
+                class="account-form management-create-form"
+                @submit.prevent="submitOrganizationCreation"
+              >
+                <div class="form-grid">
+                  <label class="field field--wide">
+                    <span>组织名称</span>
+                    <input
+                      v-model="organizationForm.name"
+                      name="new-organization-name"
+                      maxlength="120"
+                      required
+                      :aria-invalid="Boolean(organizationErrors.name)"
+                    />
+                    <small v-if="organizationErrors.name" class="field-error">{{
+                      organizationErrors.name
+                    }}</small>
+                  </label>
+                  <label class="field">
+                    <span>共享邮箱前缀</span>
+                    <input
+                      v-model="organizationForm.localPart"
+                      name="new-organization-local-part"
+                      inputmode="email"
+                      autocapitalize="none"
+                      maxlength="64"
+                      required
+                      :aria-invalid="Boolean(organizationErrors.localPart)"
+                    />
+                    <small v-if="organizationErrors.localPart" class="field-error">{{
+                      organizationErrors.localPart
+                    }}</small>
+                  </label>
+                  <label class="field">
+                    <span>邮件域名</span>
+                    <select
+                      v-model="organizationForm.domainId"
+                      name="new-organization-domain"
+                      required
+                      :aria-invalid="Boolean(organizationErrors.domainId)"
+                    >
+                      <option value="" disabled>选择域名</option>
+                      <option
+                        v-for="domain in organizationOverview?.activeDomains ?? []"
+                        :key="domain.id"
+                        :value="domain.id"
+                      >
+                        {{ domain.canonicalName }}
+                      </option>
+                    </select>
+                    <small v-if="organizationErrors.domainId" class="field-error">{{
+                      organizationErrors.domainId
+                    }}</small>
+                  </label>
+                </div>
+                <div class="form-actions form-actions--end">
+                  <button
+                    class="button button--primary"
+                    type="submit"
+                    :disabled="
+                      organizationActionId !== null ||
+                      !(organizationOverview?.activeDomains.length ?? 0) ||
+                      (organizationOverview?.policy.remainingOrganizationCount ?? 0) === 0
+                    "
+                  >
+                    {{ organizationActionId === 'create' ? '正在建立' : '创建组织' }}
+                  </button>
+                </div>
+              </form>
+
+              <div v-if="organizationOverview?.organizations.length" class="organization-list">
+                <article
+                  v-for="organization in organizationOverview.organizations"
+                  :key="organization.id"
+                  class="organization-row"
+                >
+                  <div class="organization-row-heading">
+                    <div>
+                      <div class="managed-user-title">
+                        <strong>{{ organization.name }}</strong>
+                        <span class="status-label">
+                          {{ organization.isCreator ? '创建者' : '成员' }}
+                        </span>
+                        <span
+                          v-if="organization.status === 'deletion_pending'"
+                          class="status-label status-label--disabled"
+                        >
+                          已停用
+                        </span>
+                      </div>
+                      <p>{{ organization.sharedAddress }}</p>
+                    </div>
+                    <div class="organization-row-actions">
+                      <button
+                        v-if="organization.status === 'deletion_pending'"
+                        class="button button--secondary button--compact"
+                        type="button"
+                        :disabled="organizationActionId !== null"
+                        @click="restorePendingOrganization(organization)"
+                      >
+                        {{
+                          organizationActionId === `restore:${organization.id}`
+                            ? '正在恢复'
+                            : '恢复组织'
+                        }}
+                      </button>
+                      <template v-else>
+                        <button
+                          class="button button--secondary button--compact"
+                          type="button"
+                          :disabled="organizationActionId !== null"
+                          @click="requestOrganizationAction(organization, 'leave')"
+                        >
+                          退出组织
+                        </button>
+                        <button
+                          v-if="organization.isCreator"
+                          class="button button--danger-quiet button--compact"
+                          type="button"
+                          :disabled="organizationActionId !== null"
+                          @click="requestOrganizationAction(organization, 'delete')"
+                        >
+                          删除组织
+                        </button>
+                      </template>
+                    </div>
+                  </div>
+
+                  <p
+                    v-if="organization.status === 'deletion_pending'"
+                    class="organization-pending-note"
+                  >
+                    恢复期至
+                    {{
+                      organization.deletionDueAt ? formatDate(organization.deletionDueAt) : '已结束'
+                    }}
+                  </p>
+
+                  <div class="organization-member-list">
+                    <div v-for="member in organization.members" :key="member.membershipId">
+                      <span>
+                        <strong>{{ member.displayName }}</strong>
+                        <small>{{ member.primaryAddress }}</small>
+                      </span>
+                      <span class="status-label">{{
+                        member.role === 'creator' ? '创建者' : '成员'
+                      }}</span>
+                    </div>
+                  </div>
+
+                  <template v-if="organization.isCreator && organization.status === 'active'">
+                    <div class="organization-setting-row">
+                      <div>
+                        <strong>普通成员使用组织地址发信</strong>
+                        <small>创建者始终可以使用组织地址</small>
+                      </div>
+                      <button
+                        class="button button--secondary button--compact"
+                        type="button"
+                        :disabled="organizationActionId !== null"
+                        @click="toggleOrganizationSendingPermission(organization)"
+                      >
+                        {{
+                          organizationActionId === `sending:${organization.id}`
+                            ? '正在保存'
+                            : organization.membersCanSend
+                              ? '关闭'
+                              : '开启'
+                        }}
+                      </button>
+                    </div>
+
+                    <form
+                      class="organization-invite-form"
+                      @submit.prevent="submitOrganizationInvitation(organization)"
+                    >
+                      <label class="field field--compact">
+                        <span>邀请现有用户</span>
+                        <input
+                          v-model="organizationInvitationInputs[organization.id]"
+                          :name="`organization-invite-${organization.id}`"
+                          type="email"
+                          inputmode="email"
+                          autocapitalize="none"
+                          placeholder="对方的主邮箱地址"
+                          maxlength="320"
+                          required
+                        />
+                      </label>
+                      <button
+                        class="button button--secondary button--compact"
+                        type="submit"
+                        :disabled="organizationActionId !== null"
+                      >
+                        {{
+                          organizationActionId === `invite:${organization.id}`
+                            ? '正在邀请'
+                            : '发送邀请'
+                        }}
+                      </button>
+                    </form>
+
+                    <div
+                      v-if="organization.pendingInvitations.length"
+                      class="organization-pending-invitations"
+                    >
+                      <div
+                        v-for="invitation in organization.pendingInvitations"
+                        :key="invitation.id"
+                      >
+                        <span>
+                          {{ invitation.invitedUserDisplayName }} ·
+                          {{ invitation.invitedUserPrimaryAddress }}
+                        </span>
+                        <button
+                          class="button button--danger-quiet button--compact"
+                          type="button"
+                          :disabled="organizationActionId !== null"
+                          @click="withdrawOrganizationInvitation(organization.id, invitation.id)"
+                        >
+                          {{
+                            organizationActionId === `revoke:${invitation.id}` ? '正在撤回' : '撤回'
+                          }}
+                        </button>
+                      </div>
+                    </div>
+                  </template>
+                </article>
+              </div>
+              <p v-else-if="!organizationLoading" class="empty-state">尚未加入或创建组织。</p>
+
+              <section
+                v-if="pendingOrganizationAction"
+                class="destructive-confirmation"
+                aria-labelledby="organization-action-title"
+              >
+                <h2 id="organization-action-title">
+                  {{ pendingOrganizationAction.kind === 'delete' ? '删除组织' : '退出组织' }}
+                </h2>
+                <p>
+                  <strong>{{ pendingOrganizationAction.organization.name }}</strong
+                  >：{{ organizationActionImpactText() }}
+                </p>
+                <label
+                  v-if="
+                    pendingOrganizationAction.kind === 'leave' &&
+                    pendingOrganizationAction.organization.isCreator &&
+                    pendingOrganizationAction.organization.memberCount > 1
+                  "
+                  class="field organization-successor-field"
+                >
+                  <span>继承创建者的成员</span>
+                  <select v-model="pendingOrganizationAction.successorUserId" required>
+                    <option
+                      v-for="member in pendingOrganizationAction.organization.members.filter(
+                        (item) => item.userId !== authentication?.user.id,
+                      )"
+                      :key="member.userId"
+                      :value="member.userId"
+                    >
+                      {{ member.displayName }} · {{ member.primaryAddress }}
+                    </option>
+                  </select>
+                  <small v-if="organizationErrors.successorUserId" class="field-error">{{
+                    organizationErrors.successorUserId
+                  }}</small>
+                </label>
+                <label class="checkbox-field">
+                  <input v-model="pendingOrganizationAction.confirmed" type="checkbox" />
+                  <span>我已了解这次操作对地址、成员和邮件访问的影响</span>
+                </label>
+                <div class="confirmation-actions">
+                  <button
+                    class="button button--secondary button--compact"
+                    type="button"
+                    :disabled="organizationActionId !== null"
+                    @click="cancelOrganizationAction"
+                  >
+                    取消
+                  </button>
+                  <button
+                    class="button button--danger-quiet button--compact"
+                    type="button"
+                    :disabled="
+                      !pendingOrganizationAction.confirmed ||
+                      organizationActionId !== null ||
+                      (pendingOrganizationAction.kind === 'leave' &&
+                        pendingOrganizationAction.organization.isCreator &&
+                        pendingOrganizationAction.organization.memberCount > 1 &&
+                        !pendingOrganizationAction.successorUserId)
+                    "
+                    @click="confirmOrganizationAction"
+                  >
+                    {{ organizationActionId ? '正在处理' : '确认继续' }}
+                  </button>
+                </div>
+              </section>
+            </section>
+
+            <section
+              v-show="settingsSection === 'forwarding'"
+              class="account-settings-section"
+              aria-labelledby="forwarding-title"
+            >
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="forwarding-title">自动转发</h2>
+                  <p>{{ forwardingOverview?.rules.length ?? 0 }} 条当前规则</p>
+                </div>
+                <button
+                  class="button button--secondary button--compact"
+                  type="button"
+                  :disabled="forwardingLoading || forwardingAction !== null"
+                  @click="refreshForwardingManagement"
+                >
+                  {{ forwardingLoading ? '正在刷新' : '刷新' }}
+                </button>
+              </div>
+
+              <p v-if="forwardingError" class="form-alert" role="alert">
+                {{ forwardingError }}
+              </p>
+              <p v-if="forwardingNotice" class="form-success" role="status">
+                {{ forwardingNotice }}
+              </p>
+
+              <form
+                class="account-form management-create-form"
+                @submit.prevent="submitForwardingTarget"
+              >
+                <div class="form-grid">
+                  <label class="field field--wide">
+                    <span>外部邮箱</span>
+                    <input
+                      v-model="forwardingTargetEmail"
+                      name="forwarding-target-email"
+                      type="email"
+                      inputmode="email"
+                      autocapitalize="none"
+                      autocomplete="email"
+                      maxlength="320"
+                      required
+                    />
+                  </label>
+                </div>
+                <div class="form-actions form-actions--end">
+                  <button
+                    class="button button--primary"
+                    type="submit"
+                    :disabled="forwardingAction !== null"
+                  >
+                    {{ forwardingAction === 'target:create' ? '正在发送' : '发送验证码' }}
+                  </button>
+                </div>
+              </form>
+
+              <div v-if="forwardingOverview?.targets.length" class="notification-subscription-list">
+                <article
+                  v-for="target in forwardingOverview.targets"
+                  :key="target.id"
+                  class="notification-subscription-row forwarding-target-row"
+                >
+                  <div class="notification-subscription-primary">
+                    <div class="managed-user-title">
+                      <strong>{{ target.emailAddress }}</strong>
+                      <span class="status-label">{{ externalEmailTargetStatusLabel(target) }}</span>
+                    </div>
+                    <small v-if="target.verifiedAt">
+                      验证于 {{ formatDate(target.verifiedAt) }}
+                    </small>
+                    <form
+                      v-if="
+                        target.status === 'pending' &&
+                        target.latestVerificationStatus === 'pending_input'
+                      "
+                      class="forwarding-code-form"
+                      @submit.prevent="submitForwardingVerification(target)"
+                    >
+                      <label class="field">
+                        <span>一次性验证码</span>
+                        <input
+                          v-model="forwardingVerificationCodes[target.id]"
+                          :name="`forwarding-code-${target.id}`"
+                          autocomplete="one-time-code"
+                          autocapitalize="characters"
+                          maxlength="19"
+                          required
+                        />
+                      </label>
+                      <button
+                        class="button button--primary button--compact"
+                        type="submit"
+                        :disabled="forwardingAction !== null"
+                      >
+                        验证
+                      </button>
+                    </form>
+                  </div>
+                  <div class="notification-subscription-actions">
+                    <button
+                      v-if="target.status !== 'verified'"
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="forwardingAction !== null"
+                      @click="resendForwardingTarget(target)"
+                    >
+                      重发
+                    </button>
+                    <button
+                      class="button button--danger-quiet button--compact"
+                      type="button"
+                      :disabled="forwardingAction !== null"
+                      @click="removeForwardingTarget(target)"
+                    >
+                      删除
+                    </button>
+                  </div>
+                </article>
+              </div>
+              <p v-else-if="!forwardingLoading" class="empty-state">尚未添加外部邮箱。</p>
+
+              <form
+                v-if="forwardingOverview?.targets.some((target) => target.status === 'verified')"
+                class="account-form management-create-form forwarding-rule-form"
+                @submit.prevent="submitForwardingRule"
+              >
+                <div class="section-heading">
+                  <h3>{{ forwardingRuleForm.ruleId ? '编辑转发规则' : '建立转发规则' }}</h3>
+                </div>
+                <div class="form-grid">
+                  <label class="field">
+                    <span>转发目标</span>
+                    <select v-model="forwardingRuleForm.targetId" required>
+                      <option
+                        v-for="target in forwardingOverview.targets.filter(
+                          (item) => item.status === 'verified',
+                        )"
+                        :key="target.id"
+                        :value="target.id"
+                      >
+                        {{ target.emailAddress }}
+                      </option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>邮件来源</span>
+                    <select v-model="forwardingRuleForm.scope">
+                      <option value="all_personal">全部个人地址</option>
+                      <option value="selected_personal_addresses">指定个人地址</option>
+                    </select>
+                  </label>
+                </div>
+                <fieldset
+                  v-if="forwardingRuleForm.scope === 'selected_personal_addresses'"
+                  class="notification-scopes"
+                >
+                  <legend>个人地址</legend>
+                  <label
+                    v-for="address in forwardingOverview.addresses"
+                    :key="address.id"
+                    class="checkbox-field"
+                  >
+                    <input
+                      v-model="forwardingRuleForm.addressIds"
+                      type="checkbox"
+                      :value="address.id"
+                    />
+                    <span>{{ address.address }}</span>
+                  </label>
+                </fieldset>
+                <label class="checkbox-field">
+                  <input v-model="forwardingRuleForm.enabled" type="checkbox" />
+                  <span>保存后立即启用</span>
+                </label>
+                <div class="form-actions form-actions--end">
+                  <button
+                    v-if="forwardingRuleForm.ruleId"
+                    class="button button--secondary"
+                    type="button"
+                    :disabled="forwardingAction !== null"
+                    @click="resetForwardingRuleForm"
+                  >
+                    取消编辑
+                  </button>
+                  <button
+                    class="button button--primary"
+                    type="submit"
+                    :disabled="
+                      forwardingAction !== null ||
+                      !forwardingRuleForm.targetId ||
+                      (forwardingRuleForm.scope === 'selected_personal_addresses' &&
+                        forwardingRuleForm.addressIds.length === 0)
+                    "
+                  >
+                    {{ forwardingAction === 'rule:save' ? '正在保存' : '保存规则' }}
+                  </button>
+                </div>
+              </form>
+
+              <div v-if="forwardingOverview?.rules.length" class="notification-subscription-list">
+                <article
+                  v-for="rule in forwardingOverview.rules"
+                  :key="rule.id"
+                  class="notification-subscription-row"
+                >
+                  <div class="notification-subscription-primary">
+                    <div class="managed-user-title">
+                      <strong>{{ rule.targetAddress }}</strong>
+                      <span class="status-label">
+                        {{ rule.status === 'active' ? '启用' : '暂停' }}
+                      </span>
+                    </div>
+                    <small>
                       {{
-                        platformResourceAction === `threshold:${resource.resourceKind}`
-                          ? '正在保存'
-                          : '保存阈值'
+                        rule.scope === 'all_personal'
+                          ? '全部个人地址'
+                          : forwardingOverview.addresses
+                              .filter((address) => rule.addressIds.includes(address.id))
+                              .map((address) => address.address)
+                              .join('、')
                       }}
+                    </small>
+                  </div>
+                  <div class="notification-subscription-actions">
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="forwardingAction !== null"
+                      @click="editForwardingRule(rule)"
+                    >
+                      编辑
+                    </button>
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="forwardingAction !== null"
+                      @click="toggleForwardingRule(rule)"
+                    >
+                      {{ rule.status === 'active' ? '暂停' : '恢复' }}
+                    </button>
+                    <button
+                      class="button button--danger-quiet button--compact"
+                      type="button"
+                      :disabled="forwardingAction !== null"
+                      @click="removeForwardingRule(rule)"
+                    >
+                      删除
+                    </button>
+                  </div>
+                </article>
+              </div>
+
+              <div v-if="forwardingOverview?.recentResults.length" class="notification-results">
+                <div class="section-heading"><h3>最近转发</h3></div>
+                <div class="notification-result-list">
+                  <article
+                    v-for="operation in forwardingOverview.recentResults"
+                    :key="operation.id"
+                  >
+                    <div>
+                      <strong>{{ operation.subject || '（无主题）' }}</strong>
+                      <small>
+                        {{ operation.actualAddress }} → {{ operation.targetAddress }} ·
+                        {{ formatDate(operation.createdAt) }}
+                      </small>
+                      <small v-if="operation.errorSummary">{{ operation.errorSummary }}</small>
+                    </div>
+                    <span class="status-label">
+                      {{ forwardingResultStatusLabel(operation.status) }}
+                    </span>
+                  </article>
+                </div>
+              </div>
+            </section>
+
+            <section
+              v-show="settingsSection === 'notifications'"
+              class="account-settings-section"
+              aria-labelledby="notification-title"
+            >
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="notification-title">外部通知</h2>
+                  <p>{{ notificationOverview?.subscriptions.length ?? 0 }} 个通知订阅</p>
+                </div>
+                <button
+                  class="button button--secondary button--compact"
+                  type="button"
+                  :disabled="notificationLoading || notificationAction !== null"
+                  @click="refreshNotificationManagement"
+                >
+                  {{ notificationLoading ? '正在刷新' : '刷新' }}
+                </button>
+              </div>
+
+              <p v-if="notificationError" class="form-alert" role="alert">
+                {{ notificationError }}
+              </p>
+              <p v-if="notificationNotice" class="form-success" role="status">
+                {{ notificationNotice }}
+              </p>
+              <p
+                v-if="notificationOverview && !notificationOverview.encryptionConfigured"
+                class="form-alert"
+              >
+                部署配置中尚未设置 CONFIG_KEY。
+              </p>
+
+              <form
+                class="account-form management-create-form"
+                @submit.prevent="submitNotificationSubscription"
+              >
+                <div class="form-grid notification-form-grid">
+                  <label class="field">
+                    <span>订阅名称</span>
+                    <input
+                      v-model="notificationForm.displayName"
+                      name="notification-name"
+                      maxlength="120"
+                      required
+                    />
+                  </label>
+                  <label class="field">
+                    <span>通知通道</span>
+                    <select
+                      v-model="notificationForm.channelType"
+                      name="notification-channel"
+                      @change="changeNotificationChannel"
+                    >
+                      <option value="ntfy">ntfy</option>
+                      <option value="gotify">Gotify</option>
+                      <option value="wxpusher">WxPusher</option>
+                      <option value="telegram">Telegram</option>
+                      <option value="bark">Bark</option>
+                    </select>
+                  </label>
+                  <label
+                    v-if="['ntfy', 'gotify', 'bark'].includes(notificationForm.channelType)"
+                    class="field field--wide"
+                  >
+                    <span>服务地址</span>
+                    <input
+                      v-model="notificationForm.baseUrl"
+                      name="notification-base-url"
+                      type="url"
+                      inputmode="url"
+                      autocapitalize="none"
+                      placeholder="https://push.example.com"
+                      required
+                    />
+                  </label>
+                  <label
+                    v-if="notificationDestinationLabel(notificationForm.channelType)"
+                    class="field field--wide"
+                  >
+                    <span>{{ notificationDestinationLabel(notificationForm.channelType) }}</span>
+                    <input
+                      v-model="notificationForm.destination"
+                      name="notification-destination"
+                      autocapitalize="none"
+                      maxlength="256"
+                      required
+                    />
+                  </label>
+                  <label class="field field--wide">
+                    <span>{{ notificationCredentialLabel(notificationForm.channelType) }}</span>
+                    <input
+                      v-model="notificationForm.credential"
+                      name="notification-credential"
+                      type="password"
+                      autocomplete="off"
+                      maxlength="4096"
+                      :required="notificationForm.channelType !== 'ntfy'"
+                    />
+                  </label>
+                </div>
+
+                <fieldset class="notification-scopes">
+                  <legend>邮件来源</legend>
+                  <label class="checkbox-field">
+                    <input v-model="notificationForm.allPersonal" type="checkbox" />
+                    <span>全部个人邮箱</span>
+                  </label>
+                  <label
+                    v-for="scope in notificationOverview?.availableScopes ?? []"
+                    :key="`${scope.kind}:${scope.addressId}`"
+                    class="checkbox-field"
+                  >
+                    <input
+                      v-model="notificationForm.addressIds"
+                      type="checkbox"
+                      :value="scope.addressId"
+                      :disabled="notificationForm.allPersonal && scope.kind === 'personal_address'"
+                    />
+                    <span>{{ scope.label }} · {{ scope.address }}</span>
+                  </label>
+                </fieldset>
+
+                <div class="form-actions form-actions--end">
+                  <button
+                    class="button button--primary"
+                    type="submit"
+                    :disabled="
+                      notificationAction !== null || !notificationOverview?.encryptionConfigured
+                    "
+                  >
+                    {{ notificationAction === 'create' ? '正在建立' : '建立通知订阅' }}
+                  </button>
+                </div>
+              </form>
+
+              <div
+                v-if="notificationOverview?.subscriptions.length"
+                class="notification-subscription-list"
+              >
+                <article
+                  v-for="subscription in notificationOverview.subscriptions"
+                  :key="subscription.id"
+                  class="notification-subscription-row"
+                >
+                  <div class="notification-subscription-primary">
+                    <div class="managed-user-title">
+                      <strong>{{ subscription.displayName }}</strong>
+                      <span class="status-label">
+                        {{ notificationChannelLabel(subscription.channelType) }} ·
+                        {{ subscription.status === 'active' ? '启用' : '暂停' }}
+                      </span>
+                    </div>
+                    <p v-if="subscription.baseUrl">{{ subscription.baseUrl }}</p>
+                    <p v-if="subscription.destination">{{ subscription.destination }}</p>
+                    <small>{{ subscription.scopes.map((scope) => scope.label).join('、') }}</small>
+                  </div>
+                  <div class="notification-subscription-actions">
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="notificationAction !== null"
+                      @click="toggleNotificationSubscription(subscription)"
+                    >
+                      {{ subscription.status === 'active' ? '暂停' : '恢复' }}
+                    </button>
+                    <button
+                      class="button button--danger-quiet button--compact"
+                      type="button"
+                      :disabled="notificationAction !== null"
+                      @click="removeNotificationSubscription(subscription)"
+                    >
+                      删除
+                    </button>
+                  </div>
+                </article>
+              </div>
+              <p v-else-if="!notificationLoading" class="empty-state">尚未建立通知订阅。</p>
+
+              <div
+                v-if="notificationOverview?.recentOperations.length"
+                class="notification-results"
+              >
+                <div class="section-heading"><h3>最近通知</h3></div>
+                <div class="notification-result-list">
+                  <article
+                    v-for="operation in notificationOverview.recentOperations"
+                    :key="operation.id"
+                  >
+                    <div>
+                      <strong>{{ operation.subject || '（无主题）' }}</strong>
+                      <small>
+                        {{ operation.subscriptionName }} · {{ formatDate(operation.createdAt) }}
+                      </small>
+                      <small v-if="operation.errorSummary">{{ operation.errorSummary }}</small>
+                    </div>
+                    <span class="status-label">
+                      {{ notificationOperationStatusLabel(operation.status) }}
+                    </span>
+                  </article>
+                </div>
+              </div>
+            </section>
+
+            <section
+              v-show="settingsSection === 'account-security'"
+              class="account-settings-section"
+              aria-labelledby="password-title"
+            >
+              <div class="section-heading">
+                <h2 id="password-title">修改密码</h2>
+              </div>
+
+              <form class="account-form" @submit.prevent="submitPasswordChange">
+                <div class="form-grid">
+                  <label class="field field--wide">
+                    <span>当前密码</span>
+                    <input
+                      v-model="passwordForm.currentPassword"
+                      :type="passwordForm.showPassword ? 'text' : 'password'"
+                      name="current-password"
+                      autocomplete="current-password"
+                      maxlength="128"
+                      required
+                      :aria-invalid="Boolean(passwordErrors.currentPassword)"
+                    />
+                    <small v-if="passwordErrors.currentPassword" class="field-error">{{
+                      passwordErrors.currentPassword
+                    }}</small>
+                  </label>
+
+                  <label class="field">
+                    <span>新密码</span>
+                    <input
+                      v-model="passwordForm.newPassword"
+                      :type="passwordForm.showPassword ? 'text' : 'password'"
+                      name="new-password"
+                      autocomplete="new-password"
+                      maxlength="128"
+                      required
+                      :aria-invalid="Boolean(passwordErrors.newPassword)"
+                    />
+                    <small v-if="passwordErrors.newPassword" class="field-error">{{
+                      passwordErrors.newPassword
+                    }}</small>
+                  </label>
+
+                  <label class="field">
+                    <span>确认新密码</span>
+                    <input
+                      v-model="passwordForm.confirmPassword"
+                      :type="passwordForm.showPassword ? 'text' : 'password'"
+                      name="confirm-new-password"
+                      autocomplete="new-password"
+                      maxlength="128"
+                      required
+                      :aria-invalid="Boolean(passwordErrors.confirmPassword)"
+                    />
+                    <small v-if="passwordErrors.confirmPassword" class="field-error">{{
+                      passwordErrors.confirmPassword
+                    }}</small>
+                  </label>
+
+                  <label class="checkbox-field field--wide">
+                    <input v-model="passwordForm.showPassword" type="checkbox" />
+                    <span>显示密码</span>
+                  </label>
+                  <label class="checkbox-field field--wide">
+                    <input v-model="passwordForm.revokeOtherSessions" type="checkbox" />
+                    <span>退出其他设备</span>
+                  </label>
+                </div>
+
+                <div class="form-actions form-actions--end">
+                  <button
+                    class="button button--primary"
+                    type="submit"
+                    :disabled="passwordSubmitting"
+                  >
+                    {{ passwordSubmitting ? '正在修改' : '修改密码' }}
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            <section
+              v-show="settingsSection === 'account-lifecycle'"
+              class="account-settings-section"
+              aria-labelledby="account-lifecycle-title"
+            >
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="account-lifecycle-title">账号注销</h2>
+                  <p>提交后立即退出所有设备，七天内可恢复，期满后永久清理账号数据。</p>
+                </div>
+                <button
+                  class="button button--secondary button--compact"
+                  type="button"
+                  :disabled="accountLifecycleLoading || accountLifecycleSubmitting"
+                  @click="refreshAccountLifecycle"
+                >
+                  {{ accountLifecycleLoading ? '正在检查' : '检查状态' }}
+                </button>
+              </div>
+
+              <p v-if="accountLifecycleError" class="form-alert" role="alert">
+                {{ accountLifecycleError }}
+              </p>
+              <p v-if="accountLifecycleNotice" class="form-success" role="status">
+                {{ accountLifecycleNotice }}
+              </p>
+
+              <div v-if="accountLifecycle?.blockers.length" class="account-lifecycle-blockers">
+                <p class="form-notice">需要先处理以下事项：</p>
+                <ul>
+                  <li
+                    v-for="blocker in accountLifecycle.blockers"
+                    :key="blocker.code + blocker.reference"
+                  >
+                    <strong>{{ blocker.label }}</strong>
+                    <span v-if="blocker.code === 'administrator_transfer_required'">
+                      先将系统管理员身份转让给另一名已启用用户。
+                    </span>
+                    <span v-else>先转让或永久删除该组织。</span>
+                  </li>
+                </ul>
+              </div>
+
+              <form
+                v-if="
+                  authentication.user.role === 'administrator' &&
+                  accountLifecycle?.blockers.some(
+                    (item) => item.code === 'administrator_transfer_required',
+                  )
+                "
+                class="account-form account-lifecycle-form"
+                @submit.prevent="submitAdministratorTransfer"
+              >
+                <label class="field field--wide">
+                  <span>新的系统管理员</span>
+                  <select
+                    v-model="accountDeletionForm.successorUserId"
+                    :aria-invalid="Boolean(accountDeletionErrors.successorUserId)"
+                    required
+                  >
+                    <option value="">请选择已启用用户</option>
+                    <option v-for="user in administratorSuccessors" :key="user.id" :value="user.id">
+                      {{ user.displayName }} · {{ user.primaryAddress }}
+                    </option>
+                  </select>
+                  <small v-if="accountDeletionErrors.successorUserId" class="field-error">
+                    {{ accountDeletionErrors.successorUserId }}
+                  </small>
+                  <small v-else-if="administratorSuccessors.length === 0" class="field-error">
+                    当前没有可继任的已启用用户，请先创建或启用一名用户。
+                  </small>
+                </label>
+                <div class="form-actions form-actions--end">
+                  <button
+                    class="button button--secondary"
+                    type="submit"
+                    :disabled="accountLifecycleSubmitting || administratorSuccessors.length === 0"
+                  >
+                    {{ accountLifecycleSubmitting ? '正在转让' : '转让管理员身份' }}
+                  </button>
+                </div>
+              </form>
+
+              <form
+                v-if="accountLifecycle?.canRequestDeletion"
+                class="account-form account-lifecycle-form"
+                @submit.prevent="submitAccountDeletion"
+              >
+                <p class="confirmation-note field--wide">
+                  注销期间不能登录、收信或发信。七天后，个人邮件、草稿、地址和设置将永久清理。
+                </p>
+                <label class="field field--wide">
+                  <span>当前密码</span>
+                  <input
+                    v-model="accountDeletionForm.currentPassword"
+                    :type="accountDeletionForm.showPassword ? 'text' : 'password'"
+                    name="account-deletion-password"
+                    autocomplete="current-password"
+                    maxlength="128"
+                    required
+                    :aria-invalid="Boolean(accountDeletionErrors.currentPassword)"
+                  />
+                  <small v-if="accountDeletionErrors.currentPassword" class="field-error">
+                    {{ accountDeletionErrors.currentPassword }}
+                  </small>
+                </label>
+                <label class="checkbox-field field--wide">
+                  <input v-model="accountDeletionForm.showPassword" type="checkbox" />
+                  <span>显示密码</span>
+                </label>
+                <label class="checkbox-field field--wide">
+                  <input v-model="accountDeletionForm.confirmed" type="checkbox" />
+                  <span>我已了解七天冷静期和永久删除影响</span>
+                </label>
+                <small v-if="accountDeletionErrors.confirmation" class="field-error field--wide">
+                  {{ accountDeletionErrors.confirmation }}
+                </small>
+                <div class="form-actions form-actions--end">
+                  <button
+                    class="button button--danger-quiet"
+                    type="submit"
+                    :disabled="accountLifecycleSubmitting"
+                  >
+                    {{ accountLifecycleSubmitting ? '正在提交' : '申请注销账号' }}
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            <section
+              v-if="authentication.user.role === 'administrator'"
+              v-show="settingsSection === 'health'"
+              class="account-settings-section"
+              aria-labelledby="operations-health-title"
+            >
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="operations-health-title">运行健康状态</h2>
+                  <p>根据系统账本判断收信、发信、存储和定时维护是否需要处理。</p>
+                </div>
+                <button
+                  class="button button--secondary button--compact"
+                  type="button"
+                  :disabled="operationsHealthLoading"
+                  @click="refreshOperationsHealth"
+                >
+                  {{ operationsHealthLoading ? '正在刷新' : '刷新' }}
+                </button>
+              </div>
+
+              <p v-if="operationsHealthError" class="form-alert" role="alert">
+                {{ operationsHealthError }}
+              </p>
+
+              <div v-if="operationsHealth" class="operations-health-list">
+                <article>
+                  <div class="operations-health-heading">
+                    <strong>收信</strong>
+                    <span
+                      class="status-label"
+                      :data-health-status="operationsHealth.inbound.status"
+                    >
+                      {{ operationsHealthStatusLabel(operationsHealth.inbound.status) }}
+                    </span>
+                  </div>
+                  <p>{{ operationsHealth.inbound.summary }}</p>
+                  <dl class="operations-health-metrics">
+                    <div>
+                      <dt>最近接受</dt>
+                      <dd>{{ optionalDate(operationsHealth.inbound.lastAcceptedAt) }}</dd>
+                    </div>
+                    <div>
+                      <dt>最近可见</dt>
+                      <dd>{{ optionalDate(operationsHealth.inbound.lastVisibleAt) }}</dd>
+                    </div>
+                    <div>
+                      <dt>停滞操作</dt>
+                      <dd>{{ operationsHealth.inbound.stalledCount }}</dd>
+                    </div>
+                    <div>
+                      <dt>需检查结果</dt>
+                      <dd>{{ operationsHealth.inbound.attentionCount }}</dd>
+                    </div>
+                  </dl>
+                </article>
+
+                <article>
+                  <div class="operations-health-heading">
+                    <strong>发信</strong>
+                    <span
+                      class="status-label"
+                      :data-health-status="operationsHealth.outbound.status"
+                    >
+                      {{ operationsHealthStatusLabel(operationsHealth.outbound.status) }}
+                    </span>
+                  </div>
+                  <p>{{ operationsHealth.outbound.summary }}</p>
+                  <dl class="operations-health-metrics">
+                    <div>
+                      <dt>启用服务</dt>
+                      <dd>{{ operationsHealth.outbound.activeProviderCount }}</dd>
+                    </div>
+                    <div>
+                      <dt>启用路线</dt>
+                      <dd>{{ operationsHealth.outbound.activeRouteCount }}</dd>
+                    </div>
+                    <div>
+                      <dt>结果未知</dt>
+                      <dd>{{ operationsHealth.outbound.unknownRecipientCount }}</dd>
+                    </div>
+                    <div>
+                      <dt>最近活动</dt>
+                      <dd>{{ optionalDate(operationsHealth.outbound.lastActivityAt) }}</dd>
+                    </div>
+                  </dl>
+                </article>
+
+                <article>
+                  <div class="operations-health-heading">
+                    <strong>存储</strong>
+                    <span
+                      class="status-label"
+                      :data-health-status="operationsHealth.storage.status"
+                    >
+                      {{ operationsHealthStatusLabel(operationsHealth.storage.status) }}
+                    </span>
+                  </div>
+                  <p>{{ operationsHealth.storage.summary }}</p>
+                  <dl class="operations-health-metrics">
+                    <div>
+                      <dt>达到预警线</dt>
+                      <dd>{{ operationsHealth.storage.warningResourceCount }}</dd>
+                    </div>
+                    <div>
+                      <dt>达到停止线</dt>
+                      <dd>{{ operationsHealth.storage.stoppedResourceCount }}</dd>
+                    </div>
+                    <div>
+                      <dt>缺少快照</dt>
+                      <dd>{{ operationsHealth.storage.missingResourceCount }}</dd>
+                    </div>
+                    <div>
+                      <dt>最近快照</dt>
+                      <dd>{{ optionalDate(operationsHealth.storage.latestSnapshotAt) }}</dd>
+                    </div>
+                  </dl>
+                </article>
+
+                <article>
+                  <div class="operations-health-heading">
+                    <strong>定时维护</strong>
+                    <span
+                      class="status-label"
+                      :data-health-status="operationsHealth.scheduled.status"
+                    >
+                      {{ operationsHealthStatusLabel(operationsHealth.scheduled.status) }}
+                    </span>
+                  </div>
+                  <p>{{ operationsHealth.scheduled.summary }}</p>
+                  <dl class="operations-health-metrics">
+                    <div>
+                      <dt>最近成功</dt>
+                      <dd>{{ optionalDate(operationsHealth.scheduled.lastSucceededAt) }}</dd>
+                    </div>
+                    <div>
+                      <dt>最近失败</dt>
+                      <dd>{{ optionalDate(operationsHealth.scheduled.lastFailedAt) }}</dd>
+                    </div>
+                    <div>
+                      <dt>需人工处理</dt>
+                      <dd>{{ operationsHealth.scheduled.needsAttentionTaskCount }}</dd>
+                    </div>
+                    <div>
+                      <dt>逾期任务</dt>
+                      <dd>{{ operationsHealth.scheduled.overdueTaskCount }}</dd>
+                    </div>
+                  </dl>
+                </article>
+              </div>
+            </section>
+
+            <section
+              v-if="authentication.user.role === 'administrator'"
+              v-show="settingsSection === 'receiving'"
+              class="account-settings-section"
+              aria-labelledby="inbound-control-title"
+            >
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="inbound-control-title">收信控制</h2>
+                  <p>管理暂停收信、全域收信和基础拒收规则</p>
+                </div>
+                <button
+                  class="button button--secondary button--compact"
+                  type="button"
+                  :disabled="inboundControlLoading || inboundControlAction !== null"
+                  @click="refreshInboundControl"
+                >
+                  {{ inboundControlLoading ? '正在刷新' : '刷新' }}
+                </button>
+              </div>
+
+              <p v-if="inboundControlError" class="form-alert" role="alert">
+                {{ inboundControlError }}
+              </p>
+              <p v-if="inboundControlNotice" class="form-success" role="status">
+                {{ inboundControlNotice }}
+              </p>
+
+              <div class="inbound-control-subsection">
+                <div class="section-heading"><h3>域名与全域收信</h3></div>
+                <div v-if="inboundControl?.domains.length" class="inbound-control-list">
+                  <article v-for="domain in inboundControl.domains" :key="domain.id">
+                    <div class="inbound-control-primary">
+                      <div class="managed-domain-title">
+                        <strong>{{ domain.displayName }}</strong>
+                        <span
+                          class="status-label"
+                          :class="{ 'status-label--disabled': domain.receiveStatus === 'paused' }"
+                        >
+                          {{ domain.receiveStatus === 'accepting' ? '正在收信' : '已暂停收信' }}
+                        </span>
+                      </div>
+                      <small> {{ domain.unallocatedMessageCount }} 封当前未分配来信 </small>
+                    </div>
+                    <label class="field field--compact">
+                      <span>未知地址</span>
+                      <select
+                        :value="domain.catchAllMode"
+                        :disabled="
+                          inboundControlAction !== null || domain.domainStatus !== 'active'
+                        "
+                        @change="handleDomainCatchAllChange(domain.id, $event)"
+                      >
+                        <option value="reject">拒收未创建地址</option>
+                        <option value="unallocated">保存为未分配来信</option>
+                      </select>
+                    </label>
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="inboundControlAction !== null"
+                      @click="toggleInboundReceiveStatus('domain', domain.id, domain.receiveStatus)"
+                    >
+                      {{ domain.receiveStatus === 'accepting' ? '暂停收信' : '恢复收信' }}
+                    </button>
+                    <fieldset
+                      v-if="domain.catchAllMode === 'unallocated'"
+                      class="inbound-access-fieldset"
+                    >
+                      <legend>可查看未分配来信的用户</legend>
+                      <label v-for="user in inboundActiveUsers" :key="user.id">
+                        <input
+                          type="checkbox"
+                          :checked="domain.unallocatedAccessUserIds.includes(user.id)"
+                          :disabled="inboundControlAction !== null"
+                          @change="handleUnallocatedAccessChange(domain.id, user.id, $event)"
+                        />
+                        <span>{{ user.displayName }} · {{ user.primaryAddress }}</span>
+                      </label>
+                      <small v-if="inboundActiveUsers.length === 0"
+                        >当前没有可授权的启用用户。</small
+                      >
+                    </fieldset>
+                  </article>
+                </div>
+                <p v-else-if="!inboundControlLoading" class="empty-state">没有可配置的邮件域名。</p>
+              </div>
+
+              <div class="inbound-control-subsection">
+                <div class="section-heading"><h3>用户与地址收信状态</h3></div>
+                <div class="inbound-scope-columns">
+                  <div>
+                    <h4>用户</h4>
+                    <div class="inbound-compact-list">
+                      <article v-for="user in inboundControl?.users ?? []" :key="user.id">
+                        <span>
+                          <strong>{{ user.displayName }}</strong>
+                          <small>{{ user.primaryAddress }}</small>
+                        </span>
+                        <button
+                          class="button button--secondary button--compact"
+                          type="button"
+                          :disabled="inboundControlAction !== null || user.userStatus !== 'active'"
+                          @click="toggleInboundReceiveStatus('user', user.id, user.receiveStatus)"
+                        >
+                          {{ user.receiveStatus === 'accepting' ? '暂停' : '恢复' }}
+                        </button>
+                      </article>
+                    </div>
+                  </div>
+                  <div>
+                    <h4>邮箱地址</h4>
+                    <div class="inbound-compact-list">
+                      <article v-for="address in inboundControl?.addresses ?? []" :key="address.id">
+                        <span>
+                          <strong>{{ address.canonicalAddress }}</strong>
+                          <small>{{ address.ownerName }}</small>
+                        </span>
+                        <button
+                          class="button button--secondary button--compact"
+                          type="button"
+                          :disabled="inboundControlAction !== null"
+                          @click="
+                            toggleInboundReceiveStatus('address', address.id, address.receiveStatus)
+                          "
+                        >
+                          {{ address.receiveStatus === 'accepting' ? '暂停' : '恢复' }}
+                        </button>
+                      </article>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="inbound-control-subsection">
+                <div class="section-heading"><h3>拒收规则</h3></div>
+                <form
+                  class="account-form management-create-form"
+                  @submit.prevent="submitInboundRejectionRule"
+                >
+                  <div class="form-grid">
+                    <label class="field">
+                      <span>匹配类型</span>
+                      <select v-model="inboundRejectionRuleForm.ruleType">
+                        <option value="sender_address">发件地址</option>
+                        <option value="sender_domain">发件域名</option>
+                        <option value="subject_keyword">主题关键词</option>
+                        <option value="body_keyword">正文关键词</option>
+                      </select>
+                    </label>
+                    <label class="field">
+                      <span>匹配内容</span>
+                      <input
+                        v-model="inboundRejectionRuleForm.matchValue"
+                        maxlength="320"
+                        required
+                      />
+                    </label>
+                  </div>
+                  <div class="form-actions form-actions--end">
+                    <button
+                      class="button button--primary"
+                      type="submit"
+                      :disabled="inboundControlAction !== null"
+                    >
+                      {{ inboundControlAction === 'rule:create' ? '正在添加' : '添加规则' }}
                     </button>
                   </div>
                 </form>
-              </article>
-            </div>
-
-            <form
-              class="account-form management-create-form platform-resource-configuration"
-              @submit.prevent="submitPlatformResourceConfiguration"
-            >
-              <div class="section-heading"><h3>Cloudflare 只读配置</h3></div>
-              <div class="form-grid">
-                <label class="field">
-                  <span>Cloudflare 账号编号</span>
-                  <input
-                    v-model="platformResourceConfigurationForm.accountId"
-                    autocomplete="off"
-                    autocapitalize="none"
-                    maxlength="64"
-                    required
-                  />
-                </label>
-                <label class="field">
-                  <span>D1 数据库编号</span>
-                  <input
-                    v-model="platformResourceConfigurationForm.d1DatabaseId"
-                    autocomplete="off"
-                    autocapitalize="none"
-                    maxlength="64"
-                    required
-                  />
-                </label>
-                <label class="field field--wide">
-                  <span>
-                    {{
-                      platformResourceOverview?.storageMode === 'kv'
-                        ? 'KV 命名空间编号'
-                        : 'R2 存储桶名称'
-                    }}
-                  </span>
-                  <input
-                    v-model="platformResourceConfigurationForm.storageResourceReference"
-                    autocomplete="off"
-                    autocapitalize="none"
-                    maxlength="256"
-                    required
-                  />
-                </label>
-                <label class="field field--wide">
-                  <span>只读 API Token</span>
-                  <input
-                    v-model="platformResourceConfigurationForm.apiToken"
-                    autocomplete="off"
-                    autocapitalize="none"
-                    maxlength="4096"
-                    required
-                  />
-                </label>
-              </div>
-              <div class="form-actions form-actions--end">
-                <button
-                  v-if="platformResourceOverview?.configuration.configured"
-                  class="button button--danger-quiet"
-                  type="button"
-                  :disabled="platformResourceAction !== null"
-                  @click="removePlatformResourceConfiguration"
-                >
-                  删除配置
-                </button>
-                <button
-                  class="button button--primary"
-                  type="submit"
-                  :disabled="platformResourceAction !== null"
-                >
-                  {{ platformResourceAction === 'configuration' ? '正在测试' : '保存并测试' }}
-                </button>
-              </div>
-            </form>
-          </section>
-
-          <section
-            v-if="authentication.user.role === 'administrator'"
-            class="account-settings-section"
-            aria-labelledby="organization-policy-title"
-          >
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="organization-policy-title">组织创建额度</h2>
-                <p>新用户默认最多可以创建 5 个组织</p>
-              </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="organizationPolicyLoading || organizationPolicyActionId !== null"
-                @click="refreshAdministratorOrganizationPolicies"
-              >
-                {{ organizationPolicyLoading ? '正在刷新' : '刷新' }}
-              </button>
-            </div>
-
-            <div
-              v-if="administratorOrganizationPolicies?.users.length"
-              class="organization-policy-list"
-            >
-              <article
-                v-for="user in administratorOrganizationPolicies.users"
-                :key="user.userId"
-                class="organization-policy-row"
-              >
-                <div class="alias-policy-identity">
-                  <div class="managed-user-title">
-                    <strong>{{ user.displayName }}</strong>
+                <div v-if="inboundControl?.rules.length" class="inbound-rule-list">
+                  <article v-for="rule in inboundControl.rules" :key="rule.id">
+                    <div>
+                      <strong>{{ inboundRejectionRuleTypeLabel(rule.ruleType) }}</strong>
+                      <span>{{ rule.matchValue }}</span>
+                    </div>
                     <span
                       class="status-label"
-                      :class="{ 'status-label--disabled': user.userStatus === 'disabled' }"
+                      :class="{ 'status-label--disabled': rule.status === 'paused' }"
                     >
-                      {{ user.userStatus === 'active' ? '正常' : '已禁用' }}
+                      {{ rule.status === 'active' ? '已启用' : '已暂停' }}
+                    </span>
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="inboundControlAction !== null"
+                      @click="toggleInboundRejectionRule(rule.id, rule.status)"
+                    >
+                      {{ rule.status === 'active' ? '暂停' : '恢复' }}
+                    </button>
+                    <button
+                      class="button button--danger-quiet button--compact"
+                      type="button"
+                      :disabled="inboundControlAction !== null"
+                      @click="removeInboundRejectionRule(rule.id)"
+                    >
+                      删除
+                    </button>
+                  </article>
+                </div>
+                <p v-else-if="!inboundControlLoading" class="empty-state">当前没有拒收规则。</p>
+              </div>
+            </section>
+
+            <section
+              v-if="authentication.user.role === 'administrator'"
+              v-show="settingsSection === 'resources'"
+              class="account-settings-section"
+              aria-labelledby="platform-resources-title"
+            >
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="platform-resources-title">Cloudflare 免费资源</h2>
+                  <p>达到停止线前阻止继续增加存储，现有邮件仍可阅读和清理。</p>
+                </div>
+                <button
+                  class="button button--secondary button--compact"
+                  type="button"
+                  :disabled="platformResourceLoading || platformResourceAction !== null"
+                  @click="refreshPlatformResourceUsage"
+                >
+                  {{ platformResourceAction === 'refresh' ? '正在刷新' : '刷新用量' }}
+                </button>
+              </div>
+
+              <p v-if="platformResourceError" class="form-alert" role="alert">
+                {{ platformResourceError }}
+              </p>
+              <p v-if="platformResourceNotice" class="form-success" role="status">
+                {{ platformResourceNotice }}
+              </p>
+
+              <div v-if="platformResourceOverview" class="platform-resource-list">
+                <article
+                  v-for="resource in platformResourceOverview.resources"
+                  :key="resource.resourceKind"
+                  class="platform-resource-row"
+                >
+                  <div class="platform-resource-heading">
+                    <div>
+                      <strong>{{ platformResourceLabel(resource.resourceKind) }}</strong>
+                      <small>{{ platformResourceSourceLabel(resource) }}</small>
+                    </div>
+                    <span
+                      class="status-label"
+                      :class="{ 'status-label--warning': resource.warningReached }"
+                    >
+                      {{ platformResourceStatusLabel(resource) }}
                     </span>
                   </div>
-                  <p>{{ user.primaryAddress }}</p>
-                </div>
-                <div class="organization-policy-controls">
-                  <label class="field field--compact">
-                    <span>组织上限</span>
-                    <input
-                      v-model.number="organizationPolicyDraft(user).organizationLimit"
-                      :name="`organization-limit-${user.userId}`"
-                      type="number"
-                      min="0"
-                      max="1000"
-                      step="1"
-                    />
-                  </label>
-                  <button
-                    class="button button--secondary button--compact"
-                    type="button"
-                    :disabled="organizationPolicyActionId !== null"
-                    @click="saveOrganizationPolicy(user)"
+                  <progress :value="platformResourceUsagePercent(resource)" max="100"></progress>
+                  <dl class="platform-resource-metrics">
+                    <div>
+                      <dt>账号已用 / 免费上限</dt>
+                      <dd>
+                        {{
+                          resource.accountUsedBytes === null
+                            ? '不可用'
+                            : `${formatStorageSize(resource.accountUsedBytes)} / ${formatStorageSize(resource.freeLimitBytes)}`
+                        }}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>当前资源已用 / 自身上限</dt>
+                      <dd>
+                        {{
+                          resource.simlettraUsedBytes === null
+                            ? '不可用'
+                            : `${formatStorageSize(resource.simlettraUsedBytes)} / ${formatStorageSize(resource.currentResourceLimitBytes)}`
+                        }}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>账号剩余</dt>
+                      <dd>{{ formatOptionalStorageSize(resource.remainingBytes) }}</dd>
+                    </div>
+                    <div>
+                      <dt>当前资源剩余</dt>
+                      <dd>
+                        {{ formatOptionalStorageSize(resource.currentResourceRemainingBytes) }}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>更新时间</dt>
+                      <dd>{{ formatDate(resource.fetchedAt) }}</dd>
+                    </div>
+                  </dl>
+                  <form
+                    class="platform-resource-thresholds"
+                    @submit.prevent="submitPlatformResourceThreshold(resource.resourceKind)"
                   >
-                    {{ organizationPolicyActionId === user.userId ? '正在保存' : '保存额度' }}
-                  </button>
-                </div>
-                <p
-                  class="organization-policy-usage"
-                  :class="{ 'status-label--disabled': user.policy.overLimit }"
-                >
-                  已创建 {{ user.policy.ownedOrganizationCount }} /
-                  {{ user.policy.organizationLimit }} 个组织
-                </p>
-              </article>
-            </div>
-            <p v-else-if="!organizationPolicyLoading" class="empty-state">没有可显示的用户额度。</p>
-          </section>
-
-          <section
-            v-if="authentication.user.role === 'administrator'"
-            class="account-settings-section"
-            aria-labelledby="storage-quota-title"
-          >
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="storage-quota-title">用户与组织存储配额</h2>
-                <p>
-                  当前模式：{{ storageQuotaOverview?.storageMode === 'kv' ? 'KV' : 'R2' }}；
-                  用量按用户或组织计算，成员人数和个人别名不会重复计费。
-                </p>
+                    <label class="field field--compact">
+                      <span>预警比例</span>
+                      <input
+                        v-model.number="
+                          platformResourceThresholdDrafts[resource.resourceKind].warningPercent
+                        "
+                        type="number"
+                        min="1"
+                        max="100"
+                        step="1"
+                        inputmode="numeric"
+                        required
+                      />
+                    </label>
+                    <label class="field field--compact">
+                      <span>停止比例</span>
+                      <input
+                        v-model.number="
+                          platformResourceThresholdDrafts[resource.resourceKind].stopPercent
+                        "
+                        type="number"
+                        min="1"
+                        max="100"
+                        step="1"
+                        inputmode="numeric"
+                        required
+                      />
+                    </label>
+                    <div class="platform-resource-threshold-action">
+                      <small v-if="resource.dataSource === 'local_estimate'">
+                        仅本地估算时，有效停止比例最高为 80%。
+                      </small>
+                      <button
+                        class="button button--secondary button--compact"
+                        type="submit"
+                        :disabled="platformResourceAction !== null"
+                      >
+                        {{
+                          platformResourceAction === `threshold:${resource.resourceKind}`
+                            ? '正在保存'
+                            : '保存阈值'
+                        }}
+                      </button>
+                    </div>
+                  </form>
+                </article>
               </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="storageQuotaLoading || storageQuotaAction !== null"
-                @click="refreshStorageQuotaManagement"
+
+              <form
+                class="account-form management-create-form platform-resource-configuration"
+                @submit.prevent="submitPlatformResourceConfiguration"
               >
-                {{ storageQuotaLoading ? '正在刷新' : '刷新配额' }}
-              </button>
-            </div>
-            <p v-if="storageQuotaError" class="form-alert" role="alert">
-              {{ storageQuotaError }}
-            </p>
-            <p v-if="storageQuotaNotice" class="form-success" role="status">
-              {{ storageQuotaNotice }}
-            </p>
-            <div v-if="storageQuotaOverview" class="storage-quota-defaults">
-              <article
-                v-for="item in storageQuotaOverview.defaults"
-                :key="`default-${item.ownerType}`"
-                class="storage-quota-row"
-              >
-                <div>
-                  <strong>{{ item.ownerType === 'user' ? '用户默认额度' : '组织默认额度' }}</strong>
-                  <small>当前策略版本 {{ item.policyVersion }}</small>
-                </div>
-                <div class="storage-quota-controls">
-                  <label class="field field--compact">
-                    <span>额度（字节）</span>
+                <div class="section-heading"><h3>Cloudflare 只读配置</h3></div>
+                <div class="form-grid">
+                  <label class="field">
+                    <span>Cloudflare 账号编号</span>
                     <input
-                      v-model.number="storageQuotaDefaultDrafts[item.ownerType]"
-                      type="number"
-                      min="1000000"
-                      step="1000000"
+                      v-model="platformResourceConfigurationForm.accountId"
+                      autocomplete="off"
+                      autocapitalize="none"
+                      maxlength="64"
                       required
                     />
                   </label>
-                  <button
-                    class="button button--secondary button--compact"
-                    type="button"
-                    :disabled="storageQuotaAction !== null"
-                    @click="submitStorageQuotaDefault(item.ownerType)"
-                  >
-                    {{
-                      storageQuotaAction === `default:${item.ownerType}`
-                        ? '正在保存'
-                        : '保存默认额度'
-                    }}
-                  </button>
-                </div>
-              </article>
-            </div>
-            <div v-if="storageQuotaOverview" class="storage-quota-subject-list">
-              <article
-                v-for="subject in [
-                  ...storageQuotaOverview.users,
-                  ...storageQuotaOverview.organizations,
-                ]"
-                :key="`${subject.ownerType}:${subject.ownerId}`"
-                class="storage-quota-row"
-              >
-                <div>
-                  <strong>{{ subject.displayName }}</strong>
-                  <small
-                    >{{ subject.ownerType === 'user' ? '用户' : '组织' }} ·
-                    {{ subject.overLimit ? '当前已超额，仅允许清理' : '可继续增加' }}</small
-                  >
-                </div>
-                <dl class="storage-quota-metrics">
-                  <div>
-                    <dt>已使用</dt>
-                    <dd>{{ storageQuotaUsageLabel(subject.committedBytes) }}</dd>
-                  </div>
-                  <div>
-                    <dt>已预留</dt>
-                    <dd>{{ storageQuotaUsageLabel(subject.reservedBytes) }}</dd>
-                  </div>
-                  <div>
-                    <dt>剩余</dt>
-                    <dd>{{ storageQuotaUsageLabel(subject.remainingBytes) }}</dd>
-                  </div>
-                </dl>
-                <div class="storage-quota-controls">
-                  <label class="field field--compact">
-                    <span>单独额度（留空使用默认）</span>
+                  <label class="field">
+                    <span>D1 数据库编号</span>
                     <input
-                      v-model="
-                        storageQuotaOverrideDrafts[`${subject.ownerType}:${subject.ownerId}`]
-                      "
-                      type="number"
-                      min="1000000"
-                      step="1000000"
-                      placeholder="使用默认"
+                      v-model="platformResourceConfigurationForm.d1DatabaseId"
+                      autocomplete="off"
+                      autocapitalize="none"
+                      maxlength="64"
+                      required
                     />
                   </label>
+                  <label class="field field--wide">
+                    <span>
+                      {{
+                        platformResourceOverview?.storageMode === 'kv'
+                          ? 'KV 命名空间编号'
+                          : 'R2 存储桶名称'
+                      }}
+                    </span>
+                    <input
+                      v-model="platformResourceConfigurationForm.storageResourceReference"
+                      autocomplete="off"
+                      autocapitalize="none"
+                      maxlength="256"
+                      required
+                    />
+                  </label>
+                  <label class="field field--wide">
+                    <span>只读 API Token</span>
+                    <input
+                      v-model="platformResourceConfigurationForm.apiToken"
+                      autocomplete="off"
+                      autocapitalize="none"
+                      maxlength="4096"
+                      required
+                    />
+                  </label>
+                </div>
+                <div class="form-actions form-actions--end">
                   <button
-                    class="button button--secondary button--compact"
+                    v-if="platformResourceOverview?.configuration.configured"
+                    class="button button--danger-quiet"
                     type="button"
-                    :disabled="storageQuotaAction !== null"
-                    @click="submitStorageQuotaOverride(subject.ownerType, subject.ownerId)"
+                    :disabled="platformResourceAction !== null"
+                    @click="removePlatformResourceConfiguration"
                   >
-                    {{
-                      storageQuotaAction === `override:${subject.ownerType}:${subject.ownerId}`
-                        ? '正在保存'
-                        : '保存单独额度'
-                    }}
+                    删除配置
+                  </button>
+                  <button
+                    class="button button--primary"
+                    type="submit"
+                    :disabled="platformResourceAction !== null"
+                  >
+                    {{ platformResourceAction === 'configuration' ? '正在测试' : '保存并测试' }}
                   </button>
                 </div>
-              </article>
-            </div>
-            <p
-              v-if="
-                storageQuotaOverview &&
-                !storageQuotaOverview.users.length &&
-                !storageQuotaOverview.organizations.length
-              "
-              class="empty-state"
+              </form>
+            </section>
+
+            <section
+              v-if="authentication.user.role === 'administrator'"
+              v-show="settingsSection === 'organization-policy'"
+              class="account-settings-section"
+              aria-labelledby="organization-policy-title"
             >
-              暂无用户或组织用量。
-            </p>
-          </section>
-
-          <section
-            v-if="authentication.user.role === 'administrator'"
-            class="account-settings-section"
-            aria-labelledby="address-policy-title"
-          >
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="address-policy-title">地址规则与保留期</h2>
-                <p>当前策略版本 {{ addressPolicy?.policyVersion ?? '—' }}</p>
-              </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="addressPolicyLoading || addressPolicySubmitting"
-                @click="refreshAddressPolicy"
-              >
-                {{ addressPolicyLoading ? '正在刷新' : '刷新' }}
-              </button>
-            </div>
-
-            <form class="account-form management-create-form" @submit.prevent="saveAddressPolicy">
-              <div class="form-grid">
-                <label class="field">
-                  <span>邮箱前缀最短长度</span>
-                  <input
-                    v-model.number="addressPolicyDraft.minimumLocalPartLength"
-                    name="minimum-local-part-length"
-                    type="number"
-                    min="1"
-                    max="64"
-                    step="1"
-                    required
-                    :aria-invalid="Boolean(addressPolicyErrors.minimumLocalPartLength)"
-                  />
-                  <small v-if="addressPolicyErrors.minimumLocalPartLength" class="field-error">{{
-                    addressPolicyErrors.minimumLocalPartLength
-                  }}</small>
-                </label>
-                <label class="field">
-                  <span>个人别名保留天数</span>
-                  <input
-                    v-model.number="addressPolicyDraft.aliasRetentionDays"
-                    name="alias-retention-days"
-                    type="number"
-                    min="0"
-                    max="30"
-                    step="1"
-                    required
-                    :aria-invalid="Boolean(addressPolicyErrors.aliasRetentionDays)"
-                  />
-                  <small v-if="addressPolicyErrors.aliasRetentionDays" class="field-error">{{
-                    addressPolicyErrors.aliasRetentionDays
-                  }}</small>
-                </label>
-                <label class="field field--wide">
-                  <span>禁止包含的文字（每行一项）</span>
-                  <textarea
-                    v-model="addressPolicyDraft.blockedSubstrings"
-                    name="blocked-address-substrings"
-                    rows="4"
-                    spellcheck="false"
-                    :aria-invalid="Boolean(addressPolicyErrors.blockedSubstrings)"
-                  ></textarea>
-                  <small v-if="addressPolicyErrors.blockedSubstrings" class="field-error">{{
-                    addressPolicyErrors.blockedSubstrings
-                  }}</small>
-                </label>
-                <label class="field field--wide">
-                  <span>保留名称（每行一项）</span>
-                  <textarea
-                    v-model="addressPolicyDraft.reservedNames"
-                    name="reserved-address-names"
-                    rows="4"
-                    spellcheck="false"
-                    :aria-invalid="Boolean(addressPolicyErrors.reservedNames)"
-                  ></textarea>
-                  <small v-if="addressPolicyErrors.reservedNames" class="field-error">{{
-                    addressPolicyErrors.reservedNames
-                  }}</small>
-                </label>
-              </div>
-              <div class="form-actions form-actions--end">
-                <button
-                  class="button button--primary"
-                  type="submit"
-                  :disabled="addressPolicyLoading || addressPolicySubmitting || !addressPolicy"
-                >
-                  {{ addressPolicySubmitting ? '正在保存' : '保存地址策略' }}
-                </button>
-              </div>
-            </form>
-          </section>
-
-          <section
-            v-if="authentication.user.role === 'administrator'"
-            class="account-settings-section"
-            aria-labelledby="outbound-management-title"
-          >
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="outbound-management-title">域外发信与额度</h2>
-                <p>{{ outboundManagement?.providers.length ?? 0 }} 份发信服务配置</p>
-              </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="outboundLoading || outboundAction !== null"
-                @click="refreshOutboundManagement"
-              >
-                {{ outboundLoading ? '正在刷新' : '刷新' }}
-              </button>
-            </div>
-
-            <p v-if="outboundError" class="form-alert" role="alert">{{ outboundError }}</p>
-            <p v-if="outboundNotice" class="form-success" role="status">{{ outboundNotice }}</p>
-            <p
-              v-if="outboundManagement && !outboundManagement.encryptionConfigured"
-              class="form-alert"
-            >
-              部署配置中尚未设置 CONFIG_KEY。
-            </p>
-
-            <form
-              class="account-form management-create-form"
-              @submit.prevent="submitOutboundProvider"
-            >
-              <div class="form-grid">
-                <label class="field">
-                  <span>配置名称</span>
-                  <input
-                    v-model="outboundProviderForm.displayName"
-                    name="outbound-provider-name"
-                    maxlength="120"
-                    required
-                  />
-                </label>
-                <label class="field">
-                  <span>发信服务</span>
-                  <select v-model="outboundProviderForm.providerType" name="outbound-provider-type">
-                    <option value="resend">Resend</option>
-                    <option value="smtp2go">SMTP2GO</option>
-                  </select>
-                </label>
-                <label class="field field--wide">
-                  <span>API Key</span>
-                  <input
-                    v-model="outboundProviderForm.credential"
-                    name="outbound-provider-credential"
-                    autocomplete="off"
-                    required
-                  />
-                </label>
-                <label v-if="outboundProviderForm.providerType === 'smtp2go'" class="field">
-                  <span>回调 Basic Auth 用户名</span>
-                  <input
-                    v-model="outboundProviderForm.callbackUsername"
-                    name="outbound-callback-username"
-                    autocomplete="off"
-                    required
-                  />
-                </label>
-                <label
-                  class="field"
-                  :class="{ 'field--wide': outboundProviderForm.providerType === 'resend' }"
-                >
-                  <span>{{
-                    outboundProviderForm.providerType === 'resend'
-                      ? 'Webhook Signing Secret'
-                      : '回调 Basic Auth 密码'
-                  }}</span>
-                  <input
-                    v-model="outboundProviderForm.callbackSecret"
-                    name="outbound-callback-secret"
-                    autocomplete="off"
-                    required
-                  />
-                </label>
-              </div>
-              <div class="form-actions form-actions--end">
-                <button
-                  v-if="outboundProviderForm.id"
-                  class="button button--secondary"
-                  type="button"
-                  :disabled="outboundAction !== null"
-                  @click="resetOutboundProviderForm"
-                >
-                  取消编辑
-                </button>
-                <button
-                  class="button button--primary"
-                  type="submit"
-                  :disabled="outboundAction !== null || !outboundManagement?.encryptionConfigured"
-                >
-                  {{
-                    outboundAction === 'provider'
-                      ? '正在保存'
-                      : outboundProviderForm.id
-                        ? '保存新版本'
-                        : '添加发信服务'
-                  }}
-                </button>
-              </div>
-            </form>
-
-            <div v-if="outboundManagement?.providers.length" class="outbound-provider-list">
-              <article v-for="provider in outboundManagement.providers" :key="provider.id">
-                <div class="managed-user-title">
-                  <strong>{{ provider.displayName }}</strong>
-                  <span class="status-label">{{
-                    provider.providerType === 'resend' ? 'Resend' : 'SMTP2GO'
-                  }}</span>
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="organization-policy-title">组织创建额度</h2>
+                  <p>新用户默认最多可以创建 5 个组织</p>
                 </div>
-                <label class="field field--compact">
-                  <span>API Key</span>
-                  <input :value="provider.credential" readonly />
-                </label>
-                <label class="field field--compact outbound-callback-field">
-                  <span>回调地址</span>
-                  <input :value="outboundCallbackUrl(provider)" readonly />
-                </label>
                 <button
                   class="button button--secondary button--compact"
                   type="button"
-                  :disabled="outboundAction !== null"
-                  @click="editOutboundProvider(provider)"
+                  :disabled="organizationPolicyLoading || organizationPolicyActionId !== null"
+                  @click="refreshAdministratorOrganizationPolicies"
                 >
-                  编辑
+                  {{ organizationPolicyLoading ? '正在刷新' : '刷新' }}
                 </button>
-              </article>
-            </div>
-
-            <div class="outbound-subsection">
-              <div class="section-heading">
-                <h3>域名发信顺序</h3>
               </div>
+
               <div
-                v-if="outboundManagement?.domainMonthlyQuotas.length"
-                class="outbound-route-list"
+                v-if="administratorOrganizationPolicies?.users.length"
+                class="organization-policy-list"
               >
                 <article
-                  v-for="domain in outboundManagement.domainMonthlyQuotas"
-                  :key="domain.domainId"
+                  v-for="user in administratorOrganizationPolicies.users"
+                  :key="user.userId"
+                  class="organization-policy-row"
                 >
-                  <strong>{{ domain.domainName }}</strong>
-                  <label class="field field--compact">
-                    <span>默认服务</span>
-                    <select v-model="outboundRouteDraft(domain.domainId).primaryProviderId">
-                      <option value="" disabled>选择服务</option>
-                      <option
-                        v-for="provider in outboundManagement.providers"
-                        :key="provider.id"
-                        :value="provider.id"
+                  <div class="alias-policy-identity">
+                    <div class="managed-user-title">
+                      <strong>{{ user.displayName }}</strong>
+                      <span
+                        class="status-label"
+                        :class="{ 'status-label--disabled': user.userStatus === 'disabled' }"
                       >
-                        {{ provider.displayName }}
-                      </option>
+                        {{ user.userStatus === 'active' ? '正常' : '已禁用' }}
+                      </span>
+                    </div>
+                    <p>{{ user.primaryAddress }}</p>
+                  </div>
+                  <div class="organization-policy-controls">
+                    <label class="field field--compact">
+                      <span>组织上限</span>
+                      <input
+                        v-model.number="organizationPolicyDraft(user).organizationLimit"
+                        :name="`organization-limit-${user.userId}`"
+                        type="number"
+                        min="0"
+                        max="1000"
+                        step="1"
+                      />
+                    </label>
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="organizationPolicyActionId !== null"
+                      @click="saveOrganizationPolicy(user)"
+                    >
+                      {{ organizationPolicyActionId === user.userId ? '正在保存' : '保存额度' }}
+                    </button>
+                  </div>
+                  <p
+                    class="organization-policy-usage"
+                    :class="{ 'status-label--disabled': user.policy.overLimit }"
+                  >
+                    已创建 {{ user.policy.ownedOrganizationCount }} /
+                    {{ user.policy.organizationLimit }} 个组织
+                  </p>
+                </article>
+              </div>
+              <p v-else-if="!organizationPolicyLoading" class="empty-state">
+                没有可显示的用户额度。
+              </p>
+            </section>
+
+            <section
+              v-if="authentication.user.role === 'administrator'"
+              v-show="settingsSection === 'storage'"
+              class="account-settings-section"
+              aria-labelledby="storage-quota-title"
+            >
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="storage-quota-title">用户与组织存储配额</h2>
+                  <p>
+                    当前模式：{{ storageQuotaOverview?.storageMode === 'kv' ? 'KV' : 'R2' }}；
+                    用量按用户或组织计算，成员人数和个人别名不会重复计费。
+                  </p>
+                </div>
+                <button
+                  class="button button--secondary button--compact"
+                  type="button"
+                  :disabled="storageQuotaLoading || storageQuotaAction !== null"
+                  @click="refreshStorageQuotaManagement"
+                >
+                  {{ storageQuotaLoading ? '正在刷新' : '刷新配额' }}
+                </button>
+              </div>
+              <p v-if="storageQuotaError" class="form-alert" role="alert">
+                {{ storageQuotaError }}
+              </p>
+              <p v-if="storageQuotaNotice" class="form-success" role="status">
+                {{ storageQuotaNotice }}
+              </p>
+              <div v-if="storageQuotaOverview" class="storage-quota-defaults">
+                <article
+                  v-for="item in storageQuotaOverview.defaults"
+                  :key="`default-${item.ownerType}`"
+                  class="storage-quota-row"
+                >
+                  <div>
+                    <strong>{{
+                      item.ownerType === 'user' ? '用户默认额度' : '组织默认额度'
+                    }}</strong>
+                    <small>当前策略版本 {{ item.policyVersion }}</small>
+                  </div>
+                  <div class="storage-quota-controls">
+                    <label class="field field--compact">
+                      <span>额度（字节）</span>
+                      <input
+                        v-model.number="storageQuotaDefaultDrafts[item.ownerType]"
+                        type="number"
+                        min="1000000"
+                        step="1000000"
+                        required
+                      />
+                    </label>
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="storageQuotaAction !== null"
+                      @click="submitStorageQuotaDefault(item.ownerType)"
+                    >
+                      {{
+                        storageQuotaAction === `default:${item.ownerType}`
+                          ? '正在保存'
+                          : '保存默认额度'
+                      }}
+                    </button>
+                  </div>
+                </article>
+              </div>
+              <div v-if="storageQuotaOverview" class="storage-quota-subject-list">
+                <article
+                  v-for="subject in [
+                    ...storageQuotaOverview.users,
+                    ...storageQuotaOverview.organizations,
+                  ]"
+                  :key="`${subject.ownerType}:${subject.ownerId}`"
+                  class="storage-quota-row"
+                >
+                  <div>
+                    <strong>{{ subject.displayName }}</strong>
+                    <small
+                      >{{ subject.ownerType === 'user' ? '用户' : '组织' }} ·
+                      {{ subject.overLimit ? '当前已超额，仅允许清理' : '可继续增加' }}</small
+                    >
+                  </div>
+                  <dl class="storage-quota-metrics">
+                    <div>
+                      <dt>已使用</dt>
+                      <dd>{{ storageQuotaUsageLabel(subject.committedBytes) }}</dd>
+                    </div>
+                    <div>
+                      <dt>已预留</dt>
+                      <dd>{{ storageQuotaUsageLabel(subject.reservedBytes) }}</dd>
+                    </div>
+                    <div>
+                      <dt>剩余</dt>
+                      <dd>{{ storageQuotaUsageLabel(subject.remainingBytes) }}</dd>
+                    </div>
+                  </dl>
+                  <div class="storage-quota-controls">
+                    <label class="field field--compact">
+                      <span>单独额度（留空使用默认）</span>
+                      <input
+                        v-model="
+                          storageQuotaOverrideDrafts[`${subject.ownerType}:${subject.ownerId}`]
+                        "
+                        type="number"
+                        min="1000000"
+                        step="1000000"
+                        placeholder="使用默认"
+                      />
+                    </label>
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="storageQuotaAction !== null"
+                      @click="submitStorageQuotaOverride(subject.ownerType, subject.ownerId)"
+                    >
+                      {{
+                        storageQuotaAction === `override:${subject.ownerType}:${subject.ownerId}`
+                          ? '正在保存'
+                          : '保存单独额度'
+                      }}
+                    </button>
+                  </div>
+                </article>
+              </div>
+              <p
+                v-if="
+                  storageQuotaOverview &&
+                  !storageQuotaOverview.users.length &&
+                  !storageQuotaOverview.organizations.length
+                "
+                class="empty-state"
+              >
+                暂无用户或组织用量。
+              </p>
+            </section>
+
+            <section
+              v-if="authentication.user.role === 'administrator'"
+              v-show="settingsSection === 'address-policy'"
+              class="account-settings-section"
+              aria-labelledby="address-policy-title"
+            >
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="address-policy-title">地址规则与保留期</h2>
+                  <p>当前策略版本 {{ addressPolicy?.policyVersion ?? '—' }}</p>
+                </div>
+                <button
+                  class="button button--secondary button--compact"
+                  type="button"
+                  :disabled="addressPolicyLoading || addressPolicySubmitting"
+                  @click="refreshAddressPolicy"
+                >
+                  {{ addressPolicyLoading ? '正在刷新' : '刷新' }}
+                </button>
+              </div>
+
+              <form class="account-form management-create-form" @submit.prevent="saveAddressPolicy">
+                <div class="form-grid">
+                  <label class="field">
+                    <span>邮箱前缀最短长度</span>
+                    <input
+                      v-model.number="addressPolicyDraft.minimumLocalPartLength"
+                      name="minimum-local-part-length"
+                      type="number"
+                      min="1"
+                      max="64"
+                      step="1"
+                      required
+                      :aria-invalid="Boolean(addressPolicyErrors.minimumLocalPartLength)"
+                    />
+                    <small v-if="addressPolicyErrors.minimumLocalPartLength" class="field-error">{{
+                      addressPolicyErrors.minimumLocalPartLength
+                    }}</small>
+                  </label>
+                  <label class="field">
+                    <span>个人别名保留天数</span>
+                    <input
+                      v-model.number="addressPolicyDraft.aliasRetentionDays"
+                      name="alias-retention-days"
+                      type="number"
+                      min="0"
+                      max="30"
+                      step="1"
+                      required
+                      :aria-invalid="Boolean(addressPolicyErrors.aliasRetentionDays)"
+                    />
+                    <small v-if="addressPolicyErrors.aliasRetentionDays" class="field-error">{{
+                      addressPolicyErrors.aliasRetentionDays
+                    }}</small>
+                  </label>
+                  <label class="field field--wide">
+                    <span>禁止包含的文字（每行一项）</span>
+                    <textarea
+                      v-model="addressPolicyDraft.blockedSubstrings"
+                      name="blocked-address-substrings"
+                      rows="4"
+                      spellcheck="false"
+                      :aria-invalid="Boolean(addressPolicyErrors.blockedSubstrings)"
+                    ></textarea>
+                    <small v-if="addressPolicyErrors.blockedSubstrings" class="field-error">{{
+                      addressPolicyErrors.blockedSubstrings
+                    }}</small>
+                  </label>
+                  <label class="field field--wide">
+                    <span>保留名称（每行一项）</span>
+                    <textarea
+                      v-model="addressPolicyDraft.reservedNames"
+                      name="reserved-address-names"
+                      rows="4"
+                      spellcheck="false"
+                      :aria-invalid="Boolean(addressPolicyErrors.reservedNames)"
+                    ></textarea>
+                    <small v-if="addressPolicyErrors.reservedNames" class="field-error">{{
+                      addressPolicyErrors.reservedNames
+                    }}</small>
+                  </label>
+                </div>
+                <div class="form-actions form-actions--end">
+                  <button
+                    class="button button--primary"
+                    type="submit"
+                    :disabled="addressPolicyLoading || addressPolicySubmitting || !addressPolicy"
+                  >
+                    {{ addressPolicySubmitting ? '正在保存' : '保存地址策略' }}
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            <section
+              v-if="authentication.user.role === 'administrator'"
+              v-show="settingsSection === 'outbound'"
+              class="account-settings-section"
+              aria-labelledby="outbound-management-title"
+            >
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="outbound-management-title">域外发信与额度</h2>
+                  <p>{{ outboundManagement?.providers.length ?? 0 }} 份发信服务配置</p>
+                </div>
+                <button
+                  class="button button--secondary button--compact"
+                  type="button"
+                  :disabled="outboundLoading || outboundAction !== null"
+                  @click="refreshOutboundManagement"
+                >
+                  {{ outboundLoading ? '正在刷新' : '刷新' }}
+                </button>
+              </div>
+
+              <p v-if="outboundError" class="form-alert" role="alert">{{ outboundError }}</p>
+              <p v-if="outboundNotice" class="form-success" role="status">{{ outboundNotice }}</p>
+              <p
+                v-if="outboundManagement && !outboundManagement.encryptionConfigured"
+                class="form-alert"
+              >
+                部署配置中尚未设置 CONFIG_KEY。
+              </p>
+
+              <form
+                class="account-form management-create-form"
+                @submit.prevent="submitOutboundProvider"
+              >
+                <div class="form-grid">
+                  <label class="field">
+                    <span>配置名称</span>
+                    <input
+                      v-model="outboundProviderForm.displayName"
+                      name="outbound-provider-name"
+                      maxlength="120"
+                      required
+                    />
+                  </label>
+                  <label class="field">
+                    <span>发信服务</span>
+                    <select
+                      v-model="outboundProviderForm.providerType"
+                      name="outbound-provider-type"
+                    >
+                      <option value="resend">Resend</option>
+                      <option value="smtp2go">SMTP2GO</option>
                     </select>
                   </label>
+                  <label class="field field--wide">
+                    <span>API Key</span>
+                    <input
+                      v-model="outboundProviderForm.credential"
+                      name="outbound-provider-credential"
+                      autocomplete="off"
+                      required
+                    />
+                  </label>
+                  <label v-if="outboundProviderForm.providerType === 'smtp2go'" class="field">
+                    <span>回调 Basic Auth 用户名</span>
+                    <input
+                      v-model="outboundProviderForm.callbackUsername"
+                      name="outbound-callback-username"
+                      autocomplete="off"
+                      required
+                    />
+                  </label>
+                  <label
+                    class="field"
+                    :class="{ 'field--wide': outboundProviderForm.providerType === 'resend' }"
+                  >
+                    <span>{{
+                      outboundProviderForm.providerType === 'resend'
+                        ? 'Webhook Signing Secret'
+                        : '回调 Basic Auth 密码'
+                    }}</span>
+                    <input
+                      v-model="outboundProviderForm.callbackSecret"
+                      name="outbound-callback-secret"
+                      autocomplete="off"
+                      required
+                    />
+                  </label>
+                </div>
+                <div class="form-actions form-actions--end">
+                  <button
+                    v-if="outboundProviderForm.id"
+                    class="button button--secondary"
+                    type="button"
+                    :disabled="outboundAction !== null"
+                    @click="resetOutboundProviderForm"
+                  >
+                    取消编辑
+                  </button>
+                  <button
+                    class="button button--primary"
+                    type="submit"
+                    :disabled="outboundAction !== null || !outboundManagement?.encryptionConfigured"
+                  >
+                    {{
+                      outboundAction === 'provider'
+                        ? '正在保存'
+                        : outboundProviderForm.id
+                          ? '保存新版本'
+                          : '添加发信服务'
+                    }}
+                  </button>
+                </div>
+              </form>
+
+              <div v-if="outboundManagement?.providers.length" class="outbound-provider-list">
+                <article v-for="provider in outboundManagement.providers" :key="provider.id">
+                  <div class="managed-user-title">
+                    <strong>{{ provider.displayName }}</strong>
+                    <span class="status-label">{{
+                      provider.providerType === 'resend' ? 'Resend' : 'SMTP2GO'
+                    }}</span>
+                  </div>
                   <label class="field field--compact">
-                    <span>备用服务</span>
-                    <select v-model="outboundRouteDraft(domain.domainId).backupProviderId">
-                      <option value="">不设置</option>
-                      <option
-                        v-for="provider in outboundManagement.providers"
-                        :key="provider.id"
-                        :value="provider.id"
-                      >
-                        {{ provider.displayName }}
-                      </option>
-                    </select>
+                    <span>API Key</span>
+                    <input :value="provider.credential" readonly />
+                  </label>
+                  <label class="field field--compact outbound-callback-field">
+                    <span>回调地址</span>
+                    <input :value="outboundCallbackUrl(provider)" readonly />
                   </label>
                   <button
                     class="button button--secondary button--compact"
                     type="button"
-                    :disabled="
-                      outboundAction !== null ||
-                      !outboundRouteDraft(domain.domainId).primaryProviderId
-                    "
-                    @click="submitOutboundRoute(domain.domainId)"
+                    :disabled="outboundAction !== null"
+                    @click="editOutboundProvider(provider)"
                   >
-                    {{ outboundAction === `route:${domain.domainId}` ? '正在保存' : '保存顺序' }}
+                    编辑
                   </button>
                 </article>
               </div>
-            </div>
 
-            <div class="outbound-subsection">
-              <div class="section-heading">
-                <h3>默认发件额度</h3>
-              </div>
-              <div class="outbound-default-quotas">
-                <label class="field field--compact">
-                  <span>每人滚动 24 小时收件人数</span>
-                  <input
-                    v-model.number="outboundDailyDefaultDraft"
-                    type="number"
-                    min="1"
-                    max="10000000"
-                    step="1"
-                  />
-                </label>
-                <label class="field field--compact">
-                  <span>每个域名自然月收件人数</span>
-                  <input
-                    v-model="outboundDomainMonthlyDefaultDraft"
-                    type="number"
-                    min="1"
-                    max="10000000"
-                    step="1"
-                    placeholder="不限制"
-                  />
-                </label>
-                <button
-                  class="button button--secondary button--compact"
-                  type="button"
-                  :disabled="outboundAction !== null"
-                  @click="submitOutboundDefaultQuotas"
+              <div class="outbound-subsection">
+                <div class="section-heading">
+                  <h3>域名发信顺序</h3>
+                </div>
+                <div
+                  v-if="outboundManagement?.domainMonthlyQuotas.length"
+                  class="outbound-route-list"
                 >
-                  {{ outboundAction === 'quota:defaults' ? '正在保存' : '保存默认额度' }}
-                </button>
+                  <article
+                    v-for="domain in outboundManagement.domainMonthlyQuotas"
+                    :key="domain.domainId"
+                  >
+                    <strong>{{ domain.domainName }}</strong>
+                    <label class="field field--compact">
+                      <span>默认服务</span>
+                      <select v-model="outboundRouteDraft(domain.domainId).primaryProviderId">
+                        <option value="" disabled>选择服务</option>
+                        <option
+                          v-for="provider in outboundManagement.providers"
+                          :key="provider.id"
+                          :value="provider.id"
+                        >
+                          {{ provider.displayName }}
+                        </option>
+                      </select>
+                    </label>
+                    <label class="field field--compact">
+                      <span>备用服务</span>
+                      <select v-model="outboundRouteDraft(domain.domainId).backupProviderId">
+                        <option value="">不设置</option>
+                        <option
+                          v-for="provider in outboundManagement.providers"
+                          :key="provider.id"
+                          :value="provider.id"
+                        >
+                          {{ provider.displayName }}
+                        </option>
+                      </select>
+                    </label>
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="
+                        outboundAction !== null ||
+                        !outboundRouteDraft(domain.domainId).primaryProviderId
+                      "
+                      @click="submitOutboundRoute(domain.domainId)"
+                    >
+                      {{ outboundAction === `route:${domain.domainId}` ? '正在保存' : '保存顺序' }}
+                    </button>
+                  </article>
+                </div>
               </div>
-            </div>
 
-            <div class="outbound-subsection">
-              <div class="section-heading"><h3>用户每日额度</h3></div>
-              <div class="outbound-quota-list">
-                <article
-                  v-for="user in outboundManagement?.userDailyQuotas ?? []"
-                  :key="user.userId"
-                >
-                  <div>
-                    <strong>{{ user.displayName }}</strong>
-                    <small>{{ user.primaryAddress }} · 已使用 {{ user.usedInPast24Hours }}</small>
-                  </div>
+              <div class="outbound-subsection">
+                <div class="section-heading">
+                  <h3>默认发件额度</h3>
+                </div>
+                <div class="outbound-default-quotas">
                   <label class="field field--compact">
-                    <span>收件人数上限</span>
+                    <span>每人滚动 24 小时收件人数</span>
                     <input
-                      v-model.number="outboundUserQuotaDrafts[user.userId]"
+                      v-model.number="outboundDailyDefaultDraft"
                       type="number"
                       min="1"
                       max="10000000"
                       step="1"
                     />
                   </label>
-                  <button
-                    class="button button--secondary button--compact"
-                    type="button"
-                    :disabled="outboundAction !== null"
-                    @click="submitOutboundUserQuota(user.userId)"
-                  >
-                    保存
-                  </button>
-                  <button
-                    v-if="!user.usesDefault"
-                    class="button button--secondary button--compact"
-                    type="button"
-                    :disabled="outboundAction !== null"
-                    @click="submitOutboundUserQuota(user.userId, true)"
-                  >
-                    使用默认值
-                  </button>
-                </article>
-              </div>
-            </div>
-
-            <div class="outbound-subsection">
-              <div class="section-heading"><h3>域名月度额度</h3></div>
-              <div class="outbound-quota-list">
-                <article
-                  v-for="domain in outboundManagement?.domainMonthlyQuotas ?? []"
-                  :key="domain.domainId"
-                >
-                  <div>
-                    <strong>{{ domain.domainName }}</strong>
-                    <small
-                      >已计入 {{ domain.committed }} · 预留 {{ domain.reserved }} · 待确认
-                      {{ domain.unknownHeld }}</small
-                    >
-                  </div>
                   <label class="field field--compact">
-                    <span>收件人数上限</span>
+                    <span>每个域名自然月收件人数</span>
                     <input
-                      v-model="outboundDomainQuotaDrafts[domain.domainId]"
+                      v-model="outboundDomainMonthlyDefaultDraft"
                       type="number"
                       min="1"
                       max="10000000"
@@ -9337,723 +9856,851 @@ function normalizeDomainPreview(value: string): string {
                     class="button button--secondary button--compact"
                     type="button"
                     :disabled="outboundAction !== null"
-                    @click="submitOutboundDomainQuota(domain.domainId)"
+                    @click="submitOutboundDefaultQuotas"
                   >
-                    保存
+                    {{ outboundAction === 'quota:defaults' ? '正在保存' : '保存默认额度' }}
                   </button>
-                  <button
-                    v-if="!domain.usesDefault"
-                    class="button button--secondary button--compact"
-                    type="button"
-                    :disabled="outboundAction !== null"
-                    @click="submitOutboundDomainQuota(domain.domainId, true)"
+                </div>
+              </div>
+
+              <div class="outbound-subsection">
+                <div class="section-heading"><h3>用户每日额度</h3></div>
+                <div class="outbound-quota-list">
+                  <article
+                    v-for="user in outboundManagement?.userDailyQuotas ?? []"
+                    :key="user.userId"
                   >
-                    使用默认值
-                  </button>
-                </article>
+                    <div>
+                      <strong>{{ user.displayName }}</strong>
+                      <small>{{ user.primaryAddress }} · 已使用 {{ user.usedInPast24Hours }}</small>
+                    </div>
+                    <label class="field field--compact">
+                      <span>收件人数上限</span>
+                      <input
+                        v-model.number="outboundUserQuotaDrafts[user.userId]"
+                        type="number"
+                        min="1"
+                        max="10000000"
+                        step="1"
+                      />
+                    </label>
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="outboundAction !== null"
+                      @click="submitOutboundUserQuota(user.userId)"
+                    >
+                      保存
+                    </button>
+                    <button
+                      v-if="!user.usesDefault"
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="outboundAction !== null"
+                      @click="submitOutboundUserQuota(user.userId, true)"
+                    >
+                      使用默认值
+                    </button>
+                  </article>
+                </div>
               </div>
-            </div>
-          </section>
 
-          <section
-            v-if="authentication.user.role === 'administrator'"
-            class="account-settings-section"
-            aria-labelledby="domain-management-title"
-          >
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="domain-management-title">邮件域名</h2>
-                <p>{{ domainManagement?.domains.length ?? 0 }} 个当前域名</p>
+              <div class="outbound-subsection">
+                <div class="section-heading"><h3>域名月度额度</h3></div>
+                <div class="outbound-quota-list">
+                  <article
+                    v-for="domain in outboundManagement?.domainMonthlyQuotas ?? []"
+                    :key="domain.domainId"
+                  >
+                    <div>
+                      <strong>{{ domain.domainName }}</strong>
+                      <small
+                        >已计入 {{ domain.committed }} · 预留 {{ domain.reserved }} · 待确认
+                        {{ domain.unknownHeld }}</small
+                      >
+                    </div>
+                    <label class="field field--compact">
+                      <span>收件人数上限</span>
+                      <input
+                        v-model="outboundDomainQuotaDrafts[domain.domainId]"
+                        type="number"
+                        min="1"
+                        max="10000000"
+                        step="1"
+                        placeholder="不限制"
+                      />
+                    </label>
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="outboundAction !== null"
+                      @click="submitOutboundDomainQuota(domain.domainId)"
+                    >
+                      保存
+                    </button>
+                    <button
+                      v-if="!domain.usesDefault"
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="outboundAction !== null"
+                      @click="submitOutboundDomainQuota(domain.domainId, true)"
+                    >
+                      使用默认值
+                    </button>
+                  </article>
+                </div>
               </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="domainManagementLoading || domainActionId !== null"
-                @click="refreshDomainManagement"
-              >
-                {{ domainManagementLoading ? '正在刷新' : '刷新' }}
-              </button>
-            </div>
+            </section>
 
-            <form
-              class="account-form management-create-form"
-              @submit.prevent="submitDomainCreation"
+            <section
+              v-if="authentication.user.role === 'administrator'"
+              v-show="settingsSection === 'domains'"
+              class="account-settings-section"
+              aria-labelledby="domain-management-title"
             >
-              <div class="form-grid">
-                <label class="field field--wide">
-                  <span>添加邮件域名</span>
-                  <input
-                    v-model="domainForm.domainName"
-                    name="new-mail-domain"
-                    inputmode="url"
-                    autocapitalize="none"
-                    maxlength="253"
-                    placeholder="example.com"
-                    required
-                    :aria-invalid="Boolean(domainErrors.domainName)"
-                  />
-                  <small v-if="domainErrors.domainName" class="field-error">{{
-                    domainErrors.domainName
-                  }}</small>
-                </label>
-              </div>
-
-              <div class="form-actions form-actions--end">
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="domain-management-title">邮件域名</h2>
+                  <p>{{ domainManagement?.domains.length ?? 0 }} 个当前域名</p>
+                </div>
                 <button
-                  class="button button--primary"
-                  type="submit"
-                  :disabled="domainCreateSubmitting"
+                  class="button button--secondary button--compact"
+                  type="button"
+                  :disabled="domainManagementLoading || domainActionId !== null"
+                  @click="refreshDomainManagement"
                 >
-                  {{ domainCreateSubmitting ? '正在添加' : '添加域名' }}
+                  {{ domainManagementLoading ? '正在刷新' : '刷新' }}
                 </button>
               </div>
-            </form>
 
-            <div v-if="domainManagement?.domains.length" class="managed-domain-list">
-              <article
-                v-for="domain in domainManagement.domains"
-                :key="domain.id"
-                class="managed-domain-row"
+              <form
+                class="account-form management-create-form"
+                @submit.prevent="submitDomainCreation"
               >
-                <div class="managed-domain-primary">
-                  <div class="managed-domain-title">
-                    <strong>{{ domain.displayName }}</strong>
-                    <span
-                      class="status-label"
-                      :class="{ 'status-label--disabled': domain.status === 'paused' }"
-                    >
-                      {{ domainStatusLabel(domain.status) }}
-                    </span>
-                  </div>
-                  <p v-if="domain.displayName !== domain.canonicalName">
-                    {{ domain.canonicalName }}
-                  </p>
-                  <dl class="managed-domain-details">
-                    <div>
-                      <dt>关联地址</dt>
-                      <dd>{{ domain.addressCount }} 个</dd>
-                    </div>
-                    <div>
-                      <dt>添加时间</dt>
-                      <dd>{{ formatDate(domain.createdAt) }}</dd>
-                    </div>
-                  </dl>
+                <div class="form-grid">
+                  <label class="field field--wide">
+                    <span>添加邮件域名</span>
+                    <input
+                      v-model="domainForm.domainName"
+                      name="new-mail-domain"
+                      inputmode="url"
+                      autocapitalize="none"
+                      maxlength="253"
+                      placeholder="example.com"
+                      required
+                      :aria-invalid="Boolean(domainErrors.domainName)"
+                    />
+                    <small v-if="domainErrors.domainName" class="field-error">{{
+                      domainErrors.domainName
+                    }}</small>
+                  </label>
                 </div>
 
-                <div class="managed-domain-actions">
-                  <span v-if="domain.addressCount > 0" class="action-hint"
-                    >有关联地址，不能删除</span
+                <div class="form-actions form-actions--end">
+                  <button
+                    class="button button--primary"
+                    type="submit"
+                    :disabled="domainCreateSubmitting"
                   >
+                    {{ domainCreateSubmitting ? '正在添加' : '添加域名' }}
+                  </button>
+                </div>
+              </form>
+
+              <div v-if="domainManagement?.domains.length" class="managed-domain-list">
+                <article
+                  v-for="domain in domainManagement.domains"
+                  :key="domain.id"
+                  class="managed-domain-row"
+                >
+                  <div class="managed-domain-primary">
+                    <div class="managed-domain-title">
+                      <strong>{{ domain.displayName }}</strong>
+                      <span
+                        class="status-label"
+                        :class="{ 'status-label--disabled': domain.status === 'paused' }"
+                      >
+                        {{ domainStatusLabel(domain.status) }}
+                      </span>
+                    </div>
+                    <p v-if="domain.displayName !== domain.canonicalName">
+                      {{ domain.canonicalName }}
+                    </p>
+                    <dl class="managed-domain-details">
+                      <div>
+                        <dt>关联地址</dt>
+                        <dd>{{ domain.addressCount }} 个</dd>
+                      </div>
+                      <div>
+                        <dt>添加时间</dt>
+                        <dd>{{ formatDate(domain.createdAt) }}</dd>
+                      </div>
+                    </dl>
+                  </div>
+
+                  <div class="managed-domain-actions">
+                    <span v-if="domain.addressCount > 0" class="action-hint"
+                      >有关联地址，不能删除</span
+                    >
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="domainActionId !== null"
+                      @click="toggleMailDomainStatus(domain)"
+                    >
+                      {{
+                        domainActionId === `status:${domain.id}`
+                          ? '正在处理'
+                          : domain.status === 'active'
+                            ? '暂停'
+                            : '恢复'
+                      }}
+                    </button>
+                    <button
+                      class="button button--danger-quiet button--compact"
+                      type="button"
+                      :disabled="domainActionId !== null || domain.addressCount > 0"
+                      @click="requestMailDomainDeletion(domain)"
+                    >
+                      删除
+                    </button>
+                  </div>
+                </article>
+              </div>
+              <p v-else-if="!domainManagementLoading" class="empty-state">没有可显示的邮件域名。</p>
+
+              <section
+                v-if="domainPendingDeletion"
+                class="destructive-confirmation"
+                aria-labelledby="domain-deletion-title"
+              >
+                <h2 id="domain-deletion-title">永久删除邮件域名</h2>
+                <p>
+                  将永久删除 <strong>{{ domainPendingDeletion.canonicalName }}</strong
+                  >。该域名当前没有关联地址，删除后需要重新添加才能再次使用。
+                </p>
+                <label class="checkbox-field">
+                  <input v-model="domainDeletionConfirmed" type="checkbox" />
+                  <span>我确认永久删除这个邮件域名</span>
+                </label>
+                <div class="confirmation-actions">
                   <button
                     class="button button--secondary button--compact"
                     type="button"
                     :disabled="domainActionId !== null"
-                    @click="toggleMailDomainStatus(domain)"
+                    @click="cancelMailDomainDeletion"
                   >
-                    {{
-                      domainActionId === `status:${domain.id}`
-                        ? '正在处理'
-                        : domain.status === 'active'
-                          ? '暂停'
-                          : '恢复'
-                    }}
+                    取消
                   </button>
                   <button
                     class="button button--danger-quiet button--compact"
                     type="button"
-                    :disabled="domainActionId !== null || domain.addressCount > 0"
-                    @click="requestMailDomainDeletion(domain)"
+                    :disabled="!domainDeletionConfirmed || domainActionId !== null"
+                    @click="confirmMailDomainDeletion"
                   >
-                    删除
+                    {{
+                      domainActionId === `delete:${domainPendingDeletion.id}`
+                        ? '正在删除'
+                        : '永久删除'
+                    }}
                   </button>
                 </div>
-              </article>
-            </div>
-            <p v-else-if="!domainManagementLoading" class="empty-state">没有可显示的邮件域名。</p>
+              </section>
+            </section>
 
             <section
-              v-if="domainPendingDeletion"
-              class="destructive-confirmation"
-              aria-labelledby="domain-deletion-title"
+              v-if="authentication.user.role === 'administrator'"
+              v-show="settingsSection === 'alias-policy'"
+              class="account-settings-section"
+              aria-labelledby="alias-policy-title"
             >
-              <h2 id="domain-deletion-title">永久删除邮件域名</h2>
-              <p>
-                将永久删除 <strong>{{ domainPendingDeletion.canonicalName }}</strong
-                >。该域名当前没有关联地址，删除后需要重新添加才能再次使用。
-              </p>
-              <label class="checkbox-field">
-                <input v-model="domainDeletionConfirmed" type="checkbox" />
-                <span>我确认永久删除这个邮件域名</span>
-              </label>
-              <div class="confirmation-actions">
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="alias-policy-title">个人别名策略</h2>
+                  <p>新用户默认可自行创建，个人别名上限为 20</p>
+                </div>
                 <button
                   class="button button--secondary button--compact"
                   type="button"
-                  :disabled="domainActionId !== null"
-                  @click="cancelMailDomainDeletion"
+                  :disabled="aliasPolicyLoading || aliasPolicyActionId !== null"
+                  @click="refreshAdministratorAliasPolicies"
                 >
-                  取消
-                </button>
-                <button
-                  class="button button--danger-quiet button--compact"
-                  type="button"
-                  :disabled="!domainDeletionConfirmed || domainActionId !== null"
-                  @click="confirmMailDomainDeletion"
-                >
-                  {{
-                    domainActionId === `delete:${domainPendingDeletion.id}`
-                      ? '正在删除'
-                      : '永久删除'
-                  }}
+                  {{ aliasPolicyLoading ? '正在刷新' : '刷新' }}
                 </button>
               </div>
-            </section>
-          </section>
 
-          <section
-            v-if="authentication.user.role === 'administrator'"
-            class="account-settings-section"
-            aria-labelledby="alias-policy-title"
-          >
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="alias-policy-title">个人别名策略</h2>
-                <p>新用户默认可自行创建，个人别名上限为 20</p>
-              </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="aliasPolicyLoading || aliasPolicyActionId !== null"
-                @click="refreshAdministratorAliasPolicies"
+              <form
+                class="account-form management-create-form"
+                @submit.prevent="submitAdministratorAliasAssignment"
               >
-                {{ aliasPolicyLoading ? '正在刷新' : '刷新' }}
-              </button>
-            </div>
-
-            <form
-              class="account-form management-create-form"
-              @submit.prevent="submitAdministratorAliasAssignment"
-            >
-              <div class="form-grid">
-                <label class="field field--wide">
-                  <span>分配给</span>
-                  <select
-                    v-model="administratorAliasForm.userId"
-                    name="administrator-alias-user"
-                    required
-                    :aria-invalid="Boolean(administratorAliasErrors.userId)"
-                  >
-                    <option value="" disabled>选择用户</option>
-                    <option
-                      v-for="user in administratorAliasPolicies?.users.filter(
-                        (item) => item.status === 'active',
-                      ) ?? []"
-                      :key="user.id"
-                      :value="user.id"
+                <div class="form-grid">
+                  <label class="field field--wide">
+                    <span>分配给</span>
+                    <select
+                      v-model="administratorAliasForm.userId"
+                      name="administrator-alias-user"
+                      required
+                      :aria-invalid="Boolean(administratorAliasErrors.userId)"
                     >
-                      {{ user.displayName }} · {{ user.primaryAddress }}
-                    </option>
-                  </select>
-                  <small v-if="administratorAliasErrors.userId" class="field-error">{{
-                    administratorAliasErrors.userId
-                  }}</small>
-                </label>
-                <label class="field">
-                  <span>邮箱前缀</span>
-                  <input
-                    v-model="administratorAliasForm.localPart"
-                    name="administrator-alias-local-part"
-                    inputmode="email"
-                    autocapitalize="none"
-                    maxlength="64"
-                    required
-                    :aria-invalid="Boolean(administratorAliasErrors.localPart)"
-                  />
-                  <small v-if="administratorAliasErrors.localPart" class="field-error">{{
-                    administratorAliasErrors.localPart
-                  }}</small>
-                </label>
-                <label class="field">
-                  <span>邮件域名</span>
-                  <select
-                    v-model="administratorAliasForm.domainId"
-                    name="administrator-alias-domain"
-                    required
-                    :aria-invalid="Boolean(administratorAliasErrors.domainId)"
-                  >
-                    <option value="" disabled>选择域名</option>
-                    <option
-                      v-for="domain in personalAddressOverview?.activeDomains ?? []"
-                      :key="domain.id"
-                      :value="domain.id"
-                    >
-                      {{ domain.canonicalName }}
-                    </option>
-                  </select>
-                  <small v-if="administratorAliasErrors.domainId" class="field-error">{{
-                    administratorAliasErrors.domainId
-                  }}</small>
-                </label>
-              </div>
-              <div class="form-actions form-actions--end">
-                <button
-                  class="button button--primary"
-                  type="submit"
-                  :disabled="
-                    aliasPolicyActionId !== null ||
-                    !(administratorAliasPolicies?.users.length ?? 0) ||
-                    !(personalAddressOverview?.activeDomains.length ?? 0)
-                  "
-                >
-                  {{ aliasPolicyActionId === 'assign' ? '正在分配' : '分配个人别名' }}
-                </button>
-              </div>
-            </form>
-
-            <div v-if="administratorAliasPolicies?.users.length" class="alias-policy-list">
-              <article
-                v-for="user in administratorAliasPolicies.users"
-                :key="user.id"
-                class="alias-policy-row"
-              >
-                <div class="alias-policy-identity">
-                  <div class="managed-user-title">
-                    <strong>{{ user.displayName }}</strong>
-                    <span
-                      class="status-label"
-                      :class="{ 'status-label--disabled': user.status === 'disabled' }"
-                    >
-                      {{ user.status === 'active' ? '正常' : '已禁用' }}
-                    </span>
-                  </div>
-                  <p>{{ user.primaryAddress }}</p>
-                </div>
-
-                <div class="alias-policy-controls">
-                  <label class="field field--compact">
-                    <span>别名上限</span>
+                      <option value="" disabled>选择用户</option>
+                      <option
+                        v-for="user in administratorAliasPolicies?.users.filter(
+                          (item) => item.status === 'active',
+                        ) ?? []"
+                        :key="user.id"
+                        :value="user.id"
+                      >
+                        {{ user.displayName }} · {{ user.primaryAddress }}
+                      </option>
+                    </select>
+                    <small v-if="administratorAliasErrors.userId" class="field-error">{{
+                      administratorAliasErrors.userId
+                    }}</small>
+                  </label>
+                  <label class="field">
+                    <span>邮箱前缀</span>
                     <input
-                      v-model.number="aliasPolicyDraft(user).aliasLimit"
-                      :name="`alias-limit-${user.id}`"
-                      type="number"
-                      min="0"
-                      max="1000"
-                      step="1"
+                      v-model="administratorAliasForm.localPart"
+                      name="administrator-alias-local-part"
+                      inputmode="email"
+                      autocapitalize="none"
+                      maxlength="64"
+                      required
+                      :aria-invalid="Boolean(administratorAliasErrors.localPart)"
                     />
+                    <small v-if="administratorAliasErrors.localPart" class="field-error">{{
+                      administratorAliasErrors.localPart
+                    }}</small>
                   </label>
-                  <label class="checkbox-field">
-                    <input v-model="aliasPolicyDraft(user).selfCreationEnabled" type="checkbox" />
-                    <span>允许自行创建</span>
+                  <label class="field">
+                    <span>邮件域名</span>
+                    <select
+                      v-model="administratorAliasForm.domainId"
+                      name="administrator-alias-domain"
+                      required
+                      :aria-invalid="Boolean(administratorAliasErrors.domainId)"
+                    >
+                      <option value="" disabled>选择域名</option>
+                      <option
+                        v-for="domain in personalAddressOverview?.activeDomains ?? []"
+                        :key="domain.id"
+                        :value="domain.id"
+                      >
+                        {{ domain.canonicalName }}
+                      </option>
+                    </select>
+                    <small v-if="administratorAliasErrors.domainId" class="field-error">{{
+                      administratorAliasErrors.domainId
+                    }}</small>
                   </label>
+                </div>
+                <div class="form-actions form-actions--end">
+                  <button
+                    class="button button--primary"
+                    type="submit"
+                    :disabled="
+                      aliasPolicyActionId !== null ||
+                      !(administratorAliasPolicies?.users.length ?? 0) ||
+                      !(personalAddressOverview?.activeDomains.length ?? 0)
+                    "
+                  >
+                    {{ aliasPolicyActionId === 'assign' ? '正在分配' : '分配个人别名' }}
+                  </button>
+                </div>
+              </form>
+
+              <div v-if="administratorAliasPolicies?.users.length" class="alias-policy-list">
+                <article
+                  v-for="user in administratorAliasPolicies.users"
+                  :key="user.id"
+                  class="alias-policy-row"
+                >
+                  <div class="alias-policy-identity">
+                    <div class="managed-user-title">
+                      <strong>{{ user.displayName }}</strong>
+                      <span
+                        class="status-label"
+                        :class="{ 'status-label--disabled': user.status === 'disabled' }"
+                      >
+                        {{ user.status === 'active' ? '正常' : '已禁用' }}
+                      </span>
+                    </div>
+                    <p>{{ user.primaryAddress }}</p>
+                  </div>
+
+                  <div class="alias-policy-controls">
+                    <label class="field field--compact">
+                      <span>别名上限</span>
+                      <input
+                        v-model.number="aliasPolicyDraft(user).aliasLimit"
+                        :name="`alias-limit-${user.id}`"
+                        type="number"
+                        min="0"
+                        max="1000"
+                        step="1"
+                      />
+                    </label>
+                    <label class="checkbox-field">
+                      <input v-model="aliasPolicyDraft(user).selfCreationEnabled" type="checkbox" />
+                      <span>允许自行创建</span>
+                    </label>
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="aliasPolicyActionId !== null"
+                      @click="saveAliasPolicy(user)"
+                    >
+                      {{ aliasPolicyActionId === `policy:${user.id}` ? '正在保存' : '保存策略' }}
+                    </button>
+                  </div>
+
+                  <div class="alias-policy-usage">
+                    <span :class="{ 'status-label--disabled': user.policy.overLimit }">
+                      已使用 {{ user.policy.aliasUsed }} / {{ user.policy.aliasLimit }}
+                    </span>
+                    <div v-if="user.aliases.length" class="assigned-alias-list">
+                      <div
+                        v-for="alias in user.aliases"
+                        :key="alias.id"
+                        class="assigned-alias-item"
+                      >
+                        <span>{{ alias.address }}</span>
+                        <button
+                          class="button button--danger-quiet button--compact"
+                          type="button"
+                          :disabled="aliasPolicyActionId !== null"
+                          @click="requestAdministratorAliasDeletion(user, alias)"
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                    <small v-else>暂无个人别名</small>
+                  </div>
+                </article>
+              </div>
+              <p v-else-if="!aliasPolicyLoading" class="empty-state">没有可显示的用户策略。</p>
+
+              <section
+                v-if="aliasPendingDeletion?.administratorAction"
+                class="destructive-confirmation"
+                aria-labelledby="administrator-alias-deletion-title"
+              >
+                <h2 id="administrator-alias-deletion-title">删除成员个人别名</h2>
+                <p>
+                  将从 <strong>{{ aliasPendingDeletion.targetDisplayName }}</strong> 的账号中删除
+                  <strong>{{ aliasPendingDeletion.address.address }}</strong
+                  >。{{ aliasDeletionImpactText() }}
+                </p>
+                <label class="checkbox-field">
+                  <input v-model="aliasDeletionConfirmed" type="checkbox" />
+                  <span>{{ aliasDeletionConfirmationText() }}</span>
+                </label>
+                <div class="confirmation-actions">
                   <button
                     class="button button--secondary button--compact"
                     type="button"
                     :disabled="aliasPolicyActionId !== null"
-                    @click="saveAliasPolicy(user)"
+                    @click="cancelAliasDeletion"
                   >
-                    {{ aliasPolicyActionId === `policy:${user.id}` ? '正在保存' : '保存策略' }}
+                    取消
                   </button>
-                </div>
-
-                <div class="alias-policy-usage">
-                  <span :class="{ 'status-label--disabled': user.policy.overLimit }">
-                    已使用 {{ user.policy.aliasUsed }} / {{ user.policy.aliasLimit }}
-                  </span>
-                  <div v-if="user.aliases.length" class="assigned-alias-list">
-                    <div v-for="alias in user.aliases" :key="alias.id" class="assigned-alias-item">
-                      <span>{{ alias.address }}</span>
-                      <button
-                        class="button button--danger-quiet button--compact"
-                        type="button"
-                        :disabled="aliasPolicyActionId !== null"
-                        @click="requestAdministratorAliasDeletion(user, alias)"
-                      >
-                        删除
-                      </button>
-                    </div>
-                  </div>
-                  <small v-else>暂无个人别名</small>
-                </div>
-              </article>
-            </div>
-            <p v-else-if="!aliasPolicyLoading" class="empty-state">没有可显示的用户策略。</p>
-
-            <section
-              v-if="aliasPendingDeletion?.administratorAction"
-              class="destructive-confirmation"
-              aria-labelledby="administrator-alias-deletion-title"
-            >
-              <h2 id="administrator-alias-deletion-title">删除成员个人别名</h2>
-              <p>
-                将从 <strong>{{ aliasPendingDeletion.targetDisplayName }}</strong> 的账号中删除
-                <strong>{{ aliasPendingDeletion.address.address }}</strong
-                >。{{ aliasDeletionImpactText() }}
-              </p>
-              <label class="checkbox-field">
-                <input v-model="aliasDeletionConfirmed" type="checkbox" />
-                <span>{{ aliasDeletionConfirmationText() }}</span>
-              </label>
-              <div class="confirmation-actions">
-                <button
-                  class="button button--secondary button--compact"
-                  type="button"
-                  :disabled="aliasPolicyActionId !== null"
-                  @click="cancelAliasDeletion"
-                >
-                  取消
-                </button>
-                <button
-                  class="button button--danger-quiet button--compact"
-                  type="button"
-                  :disabled="!aliasDeletionConfirmed || aliasPolicyActionId !== null"
-                  @click="confirmAliasDeletion"
-                >
-                  {{
-                    aliasPolicyActionId === `delete:${aliasPendingDeletion.address.id}`
-                      ? '正在删除'
-                      : '确认删除'
-                  }}
-                </button>
-              </div>
-            </section>
-          </section>
-
-          <section
-            v-if="authentication.user.role === 'administrator'"
-            class="account-settings-section"
-            aria-labelledby="account-registration-invitations-title"
-          >
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="account-registration-invitations-title">账号邀请码</h2>
-                <p>由管理员生成并自行转交，注册成功后立即失效</p>
-              </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="
-                  accountRegistrationInvitationLoading ||
-                  accountRegistrationInvitationAction !== null
-                "
-                @click="refreshAccountRegistrationInvitations"
-              >
-                {{ accountRegistrationInvitationLoading ? '正在刷新' : '刷新' }}
-              </button>
-            </div>
-
-            <p v-if="accountRegistrationInvitationError" class="form-alert" role="alert">
-              {{ accountRegistrationInvitationError }}
-            </p>
-            <p v-if="accountRegistrationInvitationNotice" class="form-success" role="status">
-              {{ accountRegistrationInvitationNotice }}
-            </p>
-
-            <form
-              class="account-form management-create-form"
-              @submit.prevent="submitAccountRegistrationInvitationCreation"
-            >
-              <label v-if="(accountRegistrationInvitations?.domains.length ?? 0) > 1" class="field">
-                <span>邮件域名</span>
-                <select
-                  v-model="accountRegistrationInvitationDomainId"
-                  name="account-registration-invitation-domain"
-                  required
-                >
-                  <option value="" disabled>选择域名</option>
-                  <option
-                    v-for="domain in accountRegistrationInvitations?.domains ?? []"
-                    :key="domain.id"
-                    :value="domain.id"
-                  >
-                    {{ domain.canonicalName }}
-                  </option>
-                </select>
-              </label>
-              <p
-                v-else-if="accountRegistrationInvitations?.domains.length === 1"
-                class="form-notice"
-              >
-                新账号将使用
-                <strong>{{ accountRegistrationInvitations.domains[0]?.canonicalName }}</strong>
-              </p>
-              <p v-else class="form-notice">当前没有可用于注册的已启用邮件域名。</p>
-              <div class="form-actions form-actions--end">
-                <button
-                  class="button button--primary"
-                  type="submit"
-                  :disabled="
-                    accountRegistrationInvitationAction !== null ||
-                    !(accountRegistrationInvitations?.domains.length ?? 0)
-                  "
-                >
-                  {{ accountRegistrationInvitationAction === 'create' ? '正在生成' : '生成邀请码' }}
-                </button>
-              </div>
-            </form>
-
-            <div
-              v-if="accountRegistrationInvitations?.invitations.length"
-              class="managed-user-list"
-            >
-              <article
-                v-for="invitation in accountRegistrationInvitations.invitations"
-                :key="invitation.id"
-                class="managed-user-row invitation-row"
-              >
-                <div class="managed-user-primary">
-                  <div class="managed-user-title">
-                    <strong>{{ invitation.domainName }}</strong>
-                    <span
-                      class="status-label"
-                      :class="{
-                        'status-label--disabled': invitation.status !== 'available',
-                      }"
-                    >
-                      {{ accountRegistrationInvitationStatusLabel(invitation.status) }}
-                    </span>
-                  </div>
-                  <div class="copy-field invitation-code-field">
-                    <input :value="invitation.code" readonly aria-label="账号邀请码" />
-                    <button
-                      class="button button--secondary button--compact"
-                      type="button"
-                      @click="copyAccountRegistrationInvitationCode(invitation)"
-                    >
-                      复制
-                    </button>
-                  </div>
-                  <dl class="managed-user-details">
-                    <div>
-                      <dt>生成时间</dt>
-                      <dd>{{ formatDate(invitation.createdAt) }}</dd>
-                    </div>
-                    <div v-if="invitation.usedBy">
-                      <dt>注册账号</dt>
-                      <dd>{{ invitation.usedBy.primaryAddress }}</dd>
-                    </div>
-                    <div v-else-if="invitation.revokedAt">
-                      <dt>撤销时间</dt>
-                      <dd>{{ formatDate(invitation.revokedAt) }}</dd>
-                    </div>
-                  </dl>
-                </div>
-                <div v-if="invitation.status === 'available'" class="managed-user-actions">
                   <button
                     class="button button--danger-quiet button--compact"
                     type="button"
-                    :disabled="accountRegistrationInvitationAction !== null"
-                    @click="revokeManagedAccountRegistrationInvitation(invitation)"
+                    :disabled="!aliasDeletionConfirmed || aliasPolicyActionId !== null"
+                    @click="confirmAliasDeletion"
                   >
                     {{
-                      accountRegistrationInvitationAction === `revoke:${invitation.id}`
-                        ? '正在撤销'
-                        : '撤销'
+                      aliasPolicyActionId === `delete:${aliasPendingDeletion.address.id}`
+                        ? '正在删除'
+                        : '确认删除'
                     }}
                   </button>
                 </div>
-              </article>
-            </div>
-            <p v-else-if="!accountRegistrationInvitationLoading" class="empty-state">
-              尚未生成账号邀请码。
-            </p>
-          </section>
+              </section>
+            </section>
 
-          <section
-            v-if="authentication.user.role === 'administrator'"
-            class="account-settings-section"
-            aria-labelledby="user-management-title"
-          >
-            <div class="section-heading section-heading--row">
-              <div>
-                <h2 id="user-management-title">用户管理</h2>
-                <p>{{ userManagement?.users.length ?? 0 }} 个当前账号</p>
+            <section
+              v-if="authentication.user.role === 'administrator'"
+              v-show="settingsSection === 'invitations'"
+              class="account-settings-section"
+              aria-labelledby="account-registration-invitations-title"
+            >
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="account-registration-invitations-title">账号邀请码</h2>
+                  <p>由管理员生成并自行转交，注册成功后立即失效</p>
+                </div>
+                <button
+                  class="button button--secondary button--compact"
+                  type="button"
+                  :disabled="
+                    accountRegistrationInvitationLoading ||
+                    accountRegistrationInvitationAction !== null
+                  "
+                  @click="refreshAccountRegistrationInvitations"
+                >
+                  {{ accountRegistrationInvitationLoading ? '正在刷新' : '刷新' }}
+                </button>
               </div>
-              <button
-                class="button button--secondary button--compact"
-                type="button"
-                :disabled="userManagementLoading || userActionId !== null"
-                @click="refreshUserManagement"
+
+              <p v-if="accountRegistrationInvitationError" class="form-alert" role="alert">
+                {{ accountRegistrationInvitationError }}
+              </p>
+              <p v-if="accountRegistrationInvitationNotice" class="form-success" role="status">
+                {{ accountRegistrationInvitationNotice }}
+              </p>
+
+              <form
+                class="account-form management-create-form"
+                @submit.prevent="submitAccountRegistrationInvitationCreation"
               >
-                {{ userManagementLoading ? '正在刷新' : '刷新' }}
-              </button>
-            </div>
-
-            <form class="account-form management-create-form" @submit.prevent="submitUserCreation">
-              <div class="form-grid">
-                <label class="field field--wide">
-                  <span>显示名称</span>
-                  <input
-                    v-model="userForm.displayName"
-                    name="new-user-display-name"
-                    autocomplete="off"
-                    maxlength="80"
-                    required
-                    :aria-invalid="Boolean(userErrors.displayName)"
-                  />
-                  <small v-if="userErrors.displayName" class="field-error">{{
-                    userErrors.displayName
-                  }}</small>
-                </label>
-
-                <label class="field">
-                  <span>邮箱前缀</span>
-                  <input
-                    v-model="userForm.localPart"
-                    name="new-user-local-part"
-                    inputmode="email"
-                    autocapitalize="none"
-                    maxlength="64"
-                    required
-                    :aria-invalid="Boolean(userErrors.localPart)"
-                  />
-                  <small v-if="userErrors.localPart" class="field-error">{{
-                    userErrors.localPart
-                  }}</small>
-                </label>
-
-                <label class="field">
+                <label
+                  v-if="(accountRegistrationInvitations?.domains.length ?? 0) > 1"
+                  class="field"
+                >
                   <span>邮件域名</span>
                   <select
-                    v-model="userForm.domainId"
-                    name="new-user-domain"
+                    v-model="accountRegistrationInvitationDomainId"
+                    name="account-registration-invitation-domain"
                     required
-                    :aria-invalid="Boolean(userErrors.domainId)"
                   >
                     <option value="" disabled>选择域名</option>
                     <option
-                      v-for="domain in userManagement?.domains ?? []"
+                      v-for="domain in accountRegistrationInvitations?.domains ?? []"
                       :key="domain.id"
                       :value="domain.id"
                     >
                       {{ domain.canonicalName }}
                     </option>
                   </select>
-                  <small v-if="userErrors.domainId" class="field-error">{{
-                    userErrors.domainId
-                  }}</small>
                 </label>
-
-                <label class="field field--wide">
-                  <span>初始时区</span>
-                  <input
-                    v-model="userForm.timezone"
-                    name="new-user-timezone"
-                    autocomplete="off"
-                    maxlength="64"
-                    required
-                    :aria-invalid="Boolean(userErrors.timezone)"
-                  />
-                  <small v-if="userErrors.timezone" class="field-error">{{
-                    userErrors.timezone
-                  }}</small>
-                </label>
-              </div>
-
-              <div class="form-actions form-actions--end">
-                <button
-                  class="button button--primary"
-                  type="submit"
-                  :disabled="userCreateSubmitting || !(userManagement?.domains.length ?? 0)"
+                <p
+                  v-else-if="accountRegistrationInvitations?.domains.length === 1"
+                  class="form-notice"
                 >
-                  {{ userCreateSubmitting ? '正在创建' : '创建用户' }}
-                </button>
-              </div>
-            </form>
-
-            <div
-              v-if="temporaryPasswordResult"
-              class="temporary-password-result"
-              aria-live="polite"
-            >
-              <p>
-                <strong>{{ temporaryPasswordHeading }}</strong>
-                <span
-                  >{{ temporaryPasswordResult.user.displayName }} ·
-                  {{ temporaryPasswordResult.user.primaryAddress }}</span
-                >
-              </p>
-              <label class="field">
-                <span>临时密码</span>
-                <div class="copy-field">
-                  <input :value="temporaryPasswordResult.temporaryPassword" readonly />
+                  新账号将使用
+                  <strong>{{ accountRegistrationInvitations.domains[0]?.canonicalName }}</strong>
+                </p>
+                <p v-else class="form-notice">当前没有可用于注册的已启用邮件域名。</p>
+                <div class="form-actions form-actions--end">
                   <button
-                    class="button button--secondary button--compact"
-                    type="button"
-                    @click="copyTemporaryPassword"
-                  >
-                    复制
-                  </button>
-                </div>
-              </label>
-              <small
-                >有效至
-                {{ formatDate(temporaryPasswordResult.expiresAt) }}；离开本页后不能再次查看。</small
-              >
-              <small v-if="temporaryPasswordNotice" class="copy-notice">{{
-                temporaryPasswordNotice
-              }}</small>
-            </div>
-
-            <div v-if="userManagement?.users.length" class="managed-user-list">
-              <article v-for="user in userManagement.users" :key="user.id" class="managed-user-row">
-                <div class="managed-user-primary">
-                  <div class="managed-user-title">
-                    <strong>{{ user.displayName }}</strong>
-                    <span v-if="user.role === 'administrator'" class="status-label">
-                      系统管理员
-                    </span>
-                    <span
-                      v-else
-                      class="status-label"
-                      :class="{ 'status-label--disabled': user.status === 'disabled' }"
-                    >
-                      {{ userStatusLabel(user.status) }}
-                    </span>
-                  </div>
-                  <p>{{ user.primaryAddress }}</p>
-                  <dl class="managed-user-details">
-                    <div>
-                      <dt>时区</dt>
-                      <dd>{{ user.timezone ?? '未设置' }}</dd>
-                    </div>
-                    <div>
-                      <dt>创建时间</dt>
-                      <dd>{{ formatDate(user.createdAt) }}</dd>
-                    </div>
-                  </dl>
-                </div>
-
-                <div v-if="user.role === 'user'" class="managed-user-actions">
-                  <button
-                    v-if="user.status === 'active'"
-                    class="button button--secondary button--compact"
-                    type="button"
-                    :disabled="userActionId !== null"
-                    @click="resetManagedUserPassword(user)"
-                  >
-                    {{ userActionId === `reset:${user.id}` ? '正在重置' : '重置密码' }}
-                  </button>
-                  <button
-                    class="button button--compact"
-                    :class="user.status === 'active' ? 'button--danger-quiet' : 'button--secondary'"
-                    type="button"
-                    :disabled="userActionId !== null"
-                    @click="toggleManagedUserStatus(user)"
+                    class="button button--primary"
+                    type="submit"
+                    :disabled="
+                      accountRegistrationInvitationAction !== null ||
+                      !(accountRegistrationInvitations?.domains.length ?? 0)
+                    "
                   >
                     {{
-                      userActionId === `status:${user.id}`
-                        ? '正在处理'
-                        : user.status === 'active'
-                          ? '禁用'
-                          : '重新启用'
+                      accountRegistrationInvitationAction === 'create' ? '正在生成' : '生成邀请码'
                     }}
                   </button>
                 </div>
-              </article>
-            </div>
-            <p v-else-if="!userManagementLoading" class="empty-state">没有可显示的用户。</p>
-          </section>
+              </form>
+
+              <div
+                v-if="accountRegistrationInvitations?.invitations.length"
+                class="managed-user-list"
+              >
+                <article
+                  v-for="invitation in accountRegistrationInvitations.invitations"
+                  :key="invitation.id"
+                  class="managed-user-row invitation-row"
+                >
+                  <div class="managed-user-primary">
+                    <div class="managed-user-title">
+                      <strong>{{ invitation.domainName }}</strong>
+                      <span
+                        class="status-label"
+                        :class="{
+                          'status-label--disabled': invitation.status !== 'available',
+                        }"
+                      >
+                        {{ accountRegistrationInvitationStatusLabel(invitation.status) }}
+                      </span>
+                    </div>
+                    <div class="copy-field invitation-code-field">
+                      <input :value="invitation.code" readonly aria-label="账号邀请码" />
+                      <button
+                        class="button button--secondary button--compact"
+                        type="button"
+                        @click="copyAccountRegistrationInvitationCode(invitation)"
+                      >
+                        复制
+                      </button>
+                    </div>
+                    <dl class="managed-user-details">
+                      <div>
+                        <dt>生成时间</dt>
+                        <dd>{{ formatDate(invitation.createdAt) }}</dd>
+                      </div>
+                      <div v-if="invitation.usedBy">
+                        <dt>注册账号</dt>
+                        <dd>{{ invitation.usedBy.primaryAddress }}</dd>
+                      </div>
+                      <div v-else-if="invitation.revokedAt">
+                        <dt>撤销时间</dt>
+                        <dd>{{ formatDate(invitation.revokedAt) }}</dd>
+                      </div>
+                    </dl>
+                  </div>
+                  <div v-if="invitation.status === 'available'" class="managed-user-actions">
+                    <button
+                      class="button button--danger-quiet button--compact"
+                      type="button"
+                      :disabled="accountRegistrationInvitationAction !== null"
+                      @click="revokeManagedAccountRegistrationInvitation(invitation)"
+                    >
+                      {{
+                        accountRegistrationInvitationAction === `revoke:${invitation.id}`
+                          ? '正在撤销'
+                          : '撤销'
+                      }}
+                    </button>
+                  </div>
+                </article>
+              </div>
+              <p v-else-if="!accountRegistrationInvitationLoading" class="empty-state">
+                尚未生成账号邀请码。
+              </p>
+            </section>
+
+            <section
+              v-if="authentication.user.role === 'administrator'"
+              v-show="settingsSection === 'users'"
+              class="account-settings-section"
+              aria-labelledby="user-management-title"
+            >
+              <div class="section-heading section-heading--row">
+                <div>
+                  <h2 id="user-management-title">用户管理</h2>
+                  <p>{{ userManagement?.users.length ?? 0 }} 个当前账号</p>
+                </div>
+                <button
+                  class="button button--secondary button--compact"
+                  type="button"
+                  :disabled="userManagementLoading || userActionId !== null"
+                  @click="refreshUserManagement"
+                >
+                  {{ userManagementLoading ? '正在刷新' : '刷新' }}
+                </button>
+              </div>
+
+              <form
+                class="account-form management-create-form"
+                @submit.prevent="submitUserCreation"
+              >
+                <div class="form-grid">
+                  <label class="field field--wide">
+                    <span>显示名称</span>
+                    <input
+                      v-model="userForm.displayName"
+                      name="new-user-display-name"
+                      autocomplete="off"
+                      maxlength="80"
+                      required
+                      :aria-invalid="Boolean(userErrors.displayName)"
+                    />
+                    <small v-if="userErrors.displayName" class="field-error">{{
+                      userErrors.displayName
+                    }}</small>
+                  </label>
+
+                  <label class="field">
+                    <span>邮箱前缀</span>
+                    <input
+                      v-model="userForm.localPart"
+                      name="new-user-local-part"
+                      inputmode="email"
+                      autocapitalize="none"
+                      maxlength="64"
+                      required
+                      :aria-invalid="Boolean(userErrors.localPart)"
+                    />
+                    <small v-if="userErrors.localPart" class="field-error">{{
+                      userErrors.localPart
+                    }}</small>
+                  </label>
+
+                  <label class="field">
+                    <span>邮件域名</span>
+                    <select
+                      v-model="userForm.domainId"
+                      name="new-user-domain"
+                      required
+                      :aria-invalid="Boolean(userErrors.domainId)"
+                    >
+                      <option value="" disabled>选择域名</option>
+                      <option
+                        v-for="domain in userManagement?.domains ?? []"
+                        :key="domain.id"
+                        :value="domain.id"
+                      >
+                        {{ domain.canonicalName }}
+                      </option>
+                    </select>
+                    <small v-if="userErrors.domainId" class="field-error">{{
+                      userErrors.domainId
+                    }}</small>
+                  </label>
+
+                  <label class="field field--wide">
+                    <span>初始时区</span>
+                    <input
+                      v-model="userForm.timezone"
+                      name="new-user-timezone"
+                      autocomplete="off"
+                      maxlength="64"
+                      required
+                      :aria-invalid="Boolean(userErrors.timezone)"
+                    />
+                    <small v-if="userErrors.timezone" class="field-error">{{
+                      userErrors.timezone
+                    }}</small>
+                  </label>
+                </div>
+
+                <div class="form-actions form-actions--end">
+                  <button
+                    class="button button--primary"
+                    type="submit"
+                    :disabled="userCreateSubmitting || !(userManagement?.domains.length ?? 0)"
+                  >
+                    {{ userCreateSubmitting ? '正在创建' : '创建用户' }}
+                  </button>
+                </div>
+              </form>
+
+              <div
+                v-if="temporaryPasswordResult"
+                class="temporary-password-result"
+                aria-live="polite"
+              >
+                <p>
+                  <strong>{{ temporaryPasswordHeading }}</strong>
+                  <span
+                    >{{ temporaryPasswordResult.user.displayName }} ·
+                    {{ temporaryPasswordResult.user.primaryAddress }}</span
+                  >
+                </p>
+                <label class="field">
+                  <span>临时密码</span>
+                  <div class="copy-field">
+                    <input :value="temporaryPasswordResult.temporaryPassword" readonly />
+                    <button
+                      class="button button--secondary button--compact"
+                      type="button"
+                      @click="copyTemporaryPassword"
+                    >
+                      复制
+                    </button>
+                  </div>
+                </label>
+                <small
+                  >有效至
+                  {{
+                    formatDate(temporaryPasswordResult.expiresAt)
+                  }}；离开本页后不能再次查看。</small
+                >
+                <small v-if="temporaryPasswordNotice" class="copy-notice">{{
+                  temporaryPasswordNotice
+                }}</small>
+              </div>
+
+              <div v-if="userManagement?.users.length" class="managed-user-list">
+                <article
+                  v-for="user in userManagement.users"
+                  :key="user.id"
+                  class="managed-user-row"
+                >
+                  <div class="managed-user-primary">
+                    <div class="managed-user-title">
+                      <strong>{{ user.displayName }}</strong>
+                      <span v-if="user.role === 'administrator'" class="status-label">
+                        系统管理员
+                      </span>
+                      <span
+                        v-else
+                        class="status-label"
+                        :class="{ 'status-label--disabled': user.status === 'disabled' }"
+                      >
+                        {{ userStatusLabel(user.status) }}
+                      </span>
+                    </div>
+                    <p>{{ user.primaryAddress }}</p>
+                    <dl class="managed-user-details">
+                      <div>
+                        <dt>时区</dt>
+                        <dd>{{ user.timezone ?? '未设置' }}</dd>
+                      </div>
+                      <div>
+                        <dt>创建时间</dt>
+                        <dd>{{ formatDate(user.createdAt) }}</dd>
+                      </div>
+                    </dl>
+                  </div>
+
+                  <div v-if="user.role === 'user'" class="managed-user-actions">
+                    <button
+                      v-if="user.status === 'active'"
+                      class="button button--secondary button--compact"
+                      type="button"
+                      :disabled="userActionId !== null"
+                      @click="resetManagedUserPassword(user)"
+                    >
+                      {{ userActionId === `reset:${user.id}` ? '正在重置' : '重置密码' }}
+                    </button>
+                    <button
+                      class="button button--compact"
+                      :class="
+                        user.status === 'active' ? 'button--danger-quiet' : 'button--secondary'
+                      "
+                      type="button"
+                      :disabled="userActionId !== null"
+                      @click="toggleManagedUserStatus(user)"
+                    >
+                      {{
+                        userActionId === `status:${user.id}`
+                          ? '正在处理'
+                          : user.status === 'active'
+                            ? '禁用'
+                            : '重新启用'
+                      }}
+                    </button>
+                  </div>
+                </article>
+              </div>
+              <p v-else-if="!userManagementLoading" class="empty-state">没有可显示的用户。</p>
+            </section>
+          </div>
         </div>
+
+        <nav
+          v-if="
+            workspaceView === 'mailbox' &&
+            !selectedMessage &&
+            !selectedUnallocatedMessage &&
+            !selectedMessageLoading &&
+            !selectedUnallocatedMessageLoading
+          "
+          class="mobile-bottom-navigation"
+          aria-label="手机主要导航"
+        >
+          <button type="button" aria-current="page" @click="openWorkspace('mailbox')">
+            <Inbox :size="20" />
+            <span>邮件</span>
+          </button>
+          <button type="button" :disabled="draftAction !== null" @click="startNewDraft">
+            <PenLine :size="20" />
+            <span>写信</span>
+          </button>
+          <button type="button" @click="openSettings()">
+            <Settings :size="20" />
+            <span>设置</span>
+          </button>
+        </nav>
       </section>
 
       <section

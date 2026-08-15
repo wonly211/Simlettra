@@ -690,6 +690,7 @@ const outboundLoading = ref(false)
 const outboundAction = ref<string | null>(null)
 const outboundError = ref('')
 const outboundNotice = ref('')
+const outboundCallbackUrlNotice = ref('')
 const outboundProviderForm = reactive<OutboundProviderForm>({
   id: null,
   displayName: '',
@@ -3016,7 +3017,7 @@ async function submitOutboundProvider() {
   outboundError.value = ''
   outboundNotice.value = ''
   try {
-    await saveOutboundProvider({
+    const response = await saveOutboundProvider({
       ...(outboundProviderForm.id ? { id: outboundProviderForm.id } : {}),
       displayName: outboundProviderForm.displayName,
       providerType: outboundProviderForm.providerType,
@@ -3029,6 +3030,10 @@ async function submitOutboundProvider() {
     })
     resetOutboundProviderForm()
     outboundNotice.value = '发信服务配置已保存。'
+    outboundCallbackUrlNotice.value =
+      response.data.provider.providerType === 'smtp2go'
+        ? outboundCallbackUrl(response.data.provider)
+        : ''
     await refreshOutboundManagement()
   } catch (error) {
     outboundError.value = error instanceof Error ? error.message : '无法保存发信服务配置'
@@ -3127,6 +3132,16 @@ function outboundCallbackUrl(
   provider: OutboundManagementOverviewResponse['data']['providers'][number],
 ): string {
   return `${window.location.origin}/api/outbound/events/${provider.providerType}/${provider.configurationKey}`
+}
+
+async function copyOutboundCallbackUrl() {
+  if (!outboundCallbackUrlNotice.value) return
+  try {
+    await navigator.clipboard.writeText(outboundCallbackUrlNotice.value)
+    outboundNotice.value = '回调地址已复制。'
+  } catch {
+    outboundNotice.value = '浏览器未允许复制，请手动选择回调地址。'
+  }
 }
 
 async function refreshUserManagement() {
@@ -9816,6 +9831,23 @@ function normalizeDomainPreview(value: string): string {
                     编辑
                   </button>
                 </article>
+              </div>
+
+              <div v-if="outboundCallbackUrlNotice" class="outbound-callback-notice">
+                <div class="section-heading">
+                  <h3>SMTP2GO 回调地址</h3>
+                </div>
+                <p>请将此地址复制到 SMTP2GO 的 Webhook 设置中，并选择 Basic Auth。</p>
+                <div class="copy-field outbound-callback-copy-field">
+                  <input :value="outboundCallbackUrlNotice" readonly aria-label="SMTP2GO 回调地址" />
+                  <button
+                    class="button button--secondary button--compact"
+                    type="button"
+                    @click="copyOutboundCallbackUrl"
+                  >
+                    复制
+                  </button>
+                </div>
               </div>
 
               <div class="outbound-subsection">

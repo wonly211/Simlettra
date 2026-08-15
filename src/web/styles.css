@@ -4125,6 +4125,24 @@
     font-size: 12px;
   }
 
+  .outbound-callback-notice {
+    margin-top: 24px;
+    padding: 18px;
+    border: 1px solid #b9d7cf;
+    background: #f1f8f6;
+  }
+
+  .outbound-callback-notice p {
+    margin: 8px 0 14px;
+    color: #40545b;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  .outbound-callback-copy-field input {
+    font-size: 12px;
+  }
+
   .outbound-subsection {
     margin-top: 32px;
     padding-top: 28px;

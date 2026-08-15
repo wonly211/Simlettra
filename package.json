@@ -1,0 +1,36 @@
+{
+  "name": "simlettra",
+  "version": "0.1.0-dev.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.16.0",
+  "engines": {
+    "node": ">=22.13.0",
+    "pnpm": ">=11.0.0"
+  },
+  "scripts": {
+    "build": "node tools/Cloudflare连接GitHub构建.mjs",
+    "check:r2": "wrangler types --config wrangler.jsonc && vue-tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.worker.json && node tools/安全构建.mjs --config wrangler.jsonc && node tools/部署配置自检.mjs --config dist/simlettra/wrangler.json --允许占位编号",
+    "check:kv": "wrangler types --config wrangler.kv.jsonc && vue-tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.worker.json && node tools/安全构建.mjs --config wrangler.kv.jsonc && node tools/部署配置自检.mjs --config dist/simlettra_kv/wrangler.json --允许占位编号",
+    "check": "pnpm run check:r2 && pnpm run check:kv",
+    "deploy:github": "node tools/Cloudflare连接GitHub部署.mjs"
+  },
+  "dependencies": {
+    "@lucide/vue": "1.31.0",
+    "dompurify": "3.4.13",
+    "drizzle-orm": "0.45.2",
+    "fflate": "0.8.2",
+    "hono": "4.13.1",
+    "mimetext": "3.0.28",
+    "postal-mime": "2.7.6",
+    "vue": "3.5.41"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.51.2",
+    "@vitejs/plugin-vue": "6.0.8",
+    "typescript": "6.0.3",
+    "vite": "8.2.1",
+    "vue-tsc": "3.3.9",
+    "wrangler": "4.120.1"
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "simlettra",
+  "main": "./src/worker/index.ts",
+  "compatibility_date": "2026-08-11",
+  "keep_vars": true,
+  "vars": {
+    "STORAGE_MODE": "r2",
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "simlettra",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MAIL_OBJECTS_R2",
+      "bucket_name": "simlettra-mail",
+    },
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "TASK_QUEUE",
+        "queue": "simlettra-tasks",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "simlettra-tasks",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+      },
+    ],
+  },
+  "triggers": {
+    "crons": ["0 * * * *"],
+  },
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"],
+  },
+}

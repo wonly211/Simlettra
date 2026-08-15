@@ -1,0 +1,4 @@
+interface:
+  display_name: "澄笺 | Simlettra"
+  short_description: "按照当前需求与架构规范协作开发 Simlettra"
+  default_prompt: "使用 $simlettra，按照当前需求基线、已接受架构和仓库规范处理本项目任务。"

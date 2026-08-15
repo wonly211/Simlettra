@@ -1,0 +1,176 @@
+{
+  "generatedAt": "2026-08-10T12:13:52.989Z",
+  "runtime": {
+    "node": "v24.14.0",
+    "platform": "win32-x64",
+    "wrangler": "4.120.0",
+    "compatibilityDate": "2026-08-08"
+  },
+  "migrationOutput": "⛅️ wrangler 4.120.0\n────────────────────\nResource location: local \n\nUse --remote if you want to access the remote instance.\n\nMigrations to be applied:\n┌─────────────────────────┐\n│ name                    │\n├─────────────────────────┤\n│ 0001_建立认证验证表.sql │\n└─────────────────────────┘\n? About to apply 1 migration(s)\nYour database may not be available to serve requests during the migration, continue?\n🤖 Using fallback value in non-interactive context: yes\n🌀 Executing on local database DB (00000000-0000-0000-0000-000000000000) from .data\\v3\\d1:\n🌀 To execute on your remote database, add a --remote flag to your wrangler command.\n🚣 6 commands executed successfully.\n┌─────────────────────────┬────────┐\n│ name                    │ status │\n├─────────────────────────┼────────┤\n│ 0001_建立认证验证表.sql │ ✅     │\n└─────────────────────────┴────────┘",
+  "scenarioCount": 9,
+  "scenarios": [
+    {
+      "name": "密码哈希候选可构建运行并完成性能测量",
+      "passed": true,
+      "evidence": {
+        "results": [
+          {
+            "name": "PBKDF2 600,000 次",
+            "algorithm": "pbkdf2",
+            "iterations": 600000,
+            "samples": 10,
+            "minimumMs": 181,
+            "medianMs": 186,
+            "p95Ms": 188,
+            "maximumMs": 188,
+            "hash": "MRe6ceayWMomt8okU6q6X8cqbnngj5xFIOhfYI3m4iQ"
+          },
+          {
+            "name": "PBKDF2 900,000 次",
+            "algorithm": "pbkdf2",
+            "iterations": 900000,
+            "samples": 10,
+            "minimumMs": 276,
+            "medianMs": 281,
+            "p95Ms": 284,
+            "maximumMs": 284,
+            "hash": "mGxNYJABZzNCs9LnKOxWXV81YJ-ftT6FrW-KDFo-Wqc"
+          },
+          {
+            "name": "PBKDF2 1,200,000 次",
+            "algorithm": "pbkdf2",
+            "iterations": 1200000,
+            "samples": 10,
+            "minimumMs": 374,
+            "medianMs": 378,
+            "p95Ms": 393,
+            "maximumMs": 393,
+            "hash": "ehozALlZQyewKVi7Ro60V_AqysbyiAHaBf8wJmvGMUM"
+          },
+          {
+            "name": "argon2-wasm-edge Argon2id",
+            "algorithm": "argon2-wasm-edge",
+            "samples": 10,
+            "minimumMs": 23,
+            "medianMs": 23,
+            "p95Ms": 25,
+            "maximumMs": 25,
+            "hash": "zGjynUZdVnktRSaCnvdjBLdaJFZauctm_QnLduv36oE"
+          },
+          {
+            "name": "@noble/hashes Argon2id",
+            "algorithm": "argon2-noble",
+            "samples": 10,
+            "minimumMs": 124,
+            "medianMs": 126,
+            "p95Ms": 128,
+            "maximumMs": 128,
+            "hash": "zGjynUZdVnktRSaCnvdjBLdaJFZauctm_QnLduv36oE"
+          }
+        ],
+        "argon2ImplementationsAgree": true
+      }
+    },
+    {
+      "name": "密码记录随机盐、参数版本化和损坏处理",
+      "passed": true,
+      "evidence": {
+        "randomSaltProducesDifferentRecords": true,
+        "correctPasswordAccepted": true,
+        "wrongPasswordRejected": true,
+        "damagedRecordRejected": true,
+        "unsupportedVersionRejected": true,
+        "recordContainsVersionAndParameters": true
+      }
+    },
+    {
+      "name": "不存在账号执行虚拟哈希并返回相同错误",
+      "passed": true,
+      "evidence": {
+        "genericResponseMatched": true,
+        "wrongPassword": {
+          "samples": 3,
+          "minimumMs": 201.0524000000005,
+          "medianMs": 203.6330999999991,
+          "p95Ms": 204.56269999999859,
+          "maximumMs": 204.56269999999859
+        },
+        "missingAccount": {
+          "samples": 3,
+          "minimumMs": 198.7702999999965,
+          "medianMs": 200.79620000000068,
+          "p95Ms": 201.490600000001,
+          "maximumMs": 201.490600000001
+        },
+        "medianRatio": 1.0141282554151843
+      }
+    },
+    {
+      "name": "会话只保存摘要并支持查看和单个撤销",
+      "passed": true,
+      "evidence": {
+        "randomTokenBytes": 32,
+        "databaseStoresOnlyDigests": true,
+        "protectedCookieAttributesPresent": true,
+        "sessionListOmitsDigests": true,
+        "individualRevocationPassed": true
+      }
+    },
+    {
+      "name": "受保护 Cookie 配合同源与 CSRF 令牌",
+      "passed": true,
+      "evidence": {
+        "missingTokenRejected": true,
+        "crossOriginRejected": true,
+        "wrongTokenRejected": true,
+        "sameOriginWithTokenAccepted": true
+      }
+    },
+    {
+      "name": "改密可保留当前会话并撤销其他设备",
+      "passed": true,
+      "evidence": {
+        "currentSessionRetained": true,
+        "otherSessionsRevoked": true,
+        "oldPasswordRejected": true,
+        "newPasswordAccepted": true
+      }
+    },
+    {
+      "name": "禁用、待注销和管理员重置立即撤销会话",
+      "passed": true,
+      "evidence": {
+        "disabledRevokesSessionsAndUsesGenericError": true,
+        "deletionPendingRevokesSessions": true,
+        "wrongInitKeyRejected": true,
+        "administratorResetRevokesSessions": true,
+        "administratorResetChangesPassword": true
+      }
+    },
+    {
+      "name": "会话同时执行空闲和绝对有效期",
+      "passed": true,
+      "evidence": {
+        "sevenDayIdleTimeoutPassed": true,
+        "thirtyDayAbsoluteTimeoutPassed": true
+      }
+    },
+    {
+      "name": "登录限速同时支持失败累计与成功清理",
+      "passed": true,
+      "evidence": {
+        "accountThreshold": 5,
+        "sourceThreshold": 20,
+        "exponentialDelayStartsAtSeconds": 30,
+        "successfulLoginClearsRelevantFailures": true
+      }
+    }
+  ],
+  "failures": [],
+  "assessment": {
+    "passed": true,
+    "localWorkerOnly": true,
+    "remoteCloudflareValidationRequired": true,
+    "productionImplementationCreated": false
+  }
+}

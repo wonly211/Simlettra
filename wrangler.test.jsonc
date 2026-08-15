@@ -1,0 +1,40 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "simlettra-test",
+  "main": "./src/worker/index.ts",
+  "compatibility_date": "2026-08-11",
+  "keep_vars": true,
+  "vars": {
+    "CONFIG_KEY": "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+    "INIT_KEY": "simlettra-test-init-key-2026",
+    "STORAGE_MODE": "r2",
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "simlettra-test",
+      "database_id": "00000000-0000-0000-0000-000000000001",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "MAIL_OBJECTS_KV",
+      "id": "00000000000000000000000000000001",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MAIL_OBJECTS_R2",
+      "bucket_name": "simlettra-test-mail",
+    },
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "TASK_QUEUE",
+        "queue": "simlettra-test-tasks",
+      },
+    ],
+  },
+}

@@ -1,0 +1,180 @@
+{
+  "generatedAt": "2026-08-10T13:09:15.187Z",
+  "runtime": {
+    "node": "v24.14.0",
+    "platform": "win32-x64",
+    "wrangler": "4.120.0",
+    "drizzleOrm": "0.45.2",
+    "drizzleKit": "0.31.10",
+    "prisma": "7.9.1",
+    "compatibilityDate": "2026-08-08"
+  },
+  "scenarioCount": 11,
+  "scenarios": [
+    {
+      "name": "生成迁移、手写 FTS5 与 Wrangler 迁移账本共存",
+      "passed": true,
+      "evidence": {
+        "firstMigrationApplied": true,
+        "upgradeMigrationsApplied": true,
+        "repeatedApplyDidNotRepeat": true,
+        "generatedSchemaHasNoDrift": true,
+        "foreignKeyViolations": 0,
+        "preexistingRowReceivedDefault": true
+      }
+    },
+    {
+      "name": "Drizzle 与原生 D1 组合列表返回一致结果",
+      "passed": true,
+      "evidence": {
+        "resultCount": 10,
+        "sameRows": true,
+        "rawRowsRead": 267
+      }
+    },
+    {
+      "name": "查询始终按当前用户限制并使用键集分页",
+      "passed": true,
+      "evidence": {
+        "ownerFirstPage": [
+          "entry-001",
+          "entry-002",
+          "entry-003",
+          "entry-004",
+          "entry-005",
+          "entry-006",
+          "entry-007",
+          "entry-008",
+          "entry-009",
+          "entry-011"
+        ],
+        "ownerSecondPage": [
+          "entry-012",
+          "entry-013",
+          "entry-014",
+          "entry-015",
+          "entry-016",
+          "entry-017",
+          "entry-018",
+          "entry-019",
+          "entry-021",
+          "entry-022"
+        ],
+        "otherUserRows": 1,
+        "overlap": 0
+      }
+    },
+    {
+      "name": "FTS5 参数化搜索限制邮箱范围并抵抗结构注入",
+      "passed": true,
+      "evidence": {
+        "ownerMatches": [
+          "message-000",
+          "message-003",
+          "message-006",
+          "message-009"
+        ],
+        "otherScopeMatches": 0,
+        "maliciousInputChangedSqlStructure": false
+      }
+    },
+    {
+      "name": "Drizzle batch 任一语句失败时不留下半条数据",
+      "passed": true,
+      "evidence": {
+        "rejected": true,
+        "messageCount": 0,
+        "entryCount": 0
+      }
+    },
+    {
+      "name": "超过 D1 绑定参数上限的操作按 90 项分块",
+      "passed": true,
+      "evidence": {
+        "chunkSizes": [
+          90,
+          90,
+          25
+        ],
+        "changes": 205
+      }
+    },
+    {
+      "name": "Prisma D1 适配器能够读取同一数据库",
+      "passed": true,
+      "evidence": {
+        "ownerRows": 20,
+        "otherRows": 1,
+        "sameFirstPageIds": true
+      }
+    },
+    {
+      "name": "Drizzle 与 Prisma Worker 干运行打包均成功",
+      "passed": true,
+      "evidence": {
+        "drizzle": {
+          "uploadKiB": 198.75,
+          "gzipKiB": 38.52
+        },
+        "prisma": {
+          "uploadKiB": 3934.35,
+          "gzipKiB": 1242.3
+        },
+        "prismaToDrizzleGzipRatio": 32.25077881619937
+      }
+    },
+    {
+      "name": "失败迁移整体回滚且不写入迁移账本",
+      "passed": true,
+      "evidence": {
+        "commandFailedAsExpected": true,
+        "partialMarkerExists": false,
+        "migrationLedgerRecordedFailure": false
+      }
+    },
+    {
+      "name": "D1 物理导出明确拒绝包含 FTS5 的数据库",
+      "passed": true,
+      "evidence": {
+        "exportRejected": true,
+        "reason": "D1 不支持导出包含虚拟表的数据库",
+        "workaroundUsesLogicalAuthoritativeBackup": true
+      }
+    },
+    {
+      "name": "权威普通表逻辑备份可以恢复并重建派生搜索索引",
+      "passed": true,
+      "evidence": {
+        "backupFile": "权威数据逻辑备份.json",
+        "excludedDerivedTables": [
+          "search_chunks",
+          "message_search"
+        ],
+        "before": {
+          "users": 3,
+          "messages": 206,
+          "entries": 207,
+          "searchChunks": 12
+        },
+        "restored": {
+          "users": 3,
+          "messages": 206,
+          "entries": 207,
+          "searchChunks": 206
+        },
+        "rebuiltSearchChunks": 206,
+        "searchWorksAfterRebuild": true
+      }
+    }
+  ],
+  "failures": [],
+  "assessment": {
+    "passed": true,
+    "recommendedRuntimeCandidate": "drizzle",
+    "recommendedMigrationExecutor": "wrangler-d1-migrations",
+    "prismaD1AdapterPreview": true,
+    "localWorkerOnly": true,
+    "remoteTimeTravelValidationRequired": true,
+    "productionSchemaCreated": false
+  }
+}

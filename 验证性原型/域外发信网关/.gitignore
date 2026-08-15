@@ -1,0 +1,5 @@
+node_modules/
+.data/
+.wrangler/
+验证结果.json
+wrangler-*.log

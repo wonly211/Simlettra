@@ -1,0 +1,1 @@
+ALTER TABLE `messages` ADD `preview_text` text DEFAULT '' NOT NULL;

@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "simlettra-d1-drizzle-prototype",
+  "main": "src/drizzle-worker.ts",
+  "compatibility_date": "2026-08-08",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "simlettra-d1-tooling-prototype",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": ".运行迁移"
+    }
+  ]
+}

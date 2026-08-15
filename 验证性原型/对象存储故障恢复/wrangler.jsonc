@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "simlettra-object-recovery-prototype",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-08",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "simlettra-object-recovery",
+      "database_id": "00000000-0000-0000-0000-000000000003",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "MAIL_KV",
+      "id": "00000000000000000000000000000003"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MAIL_R2",
+      "bucket_name": "simlettra-object-recovery"
+    }
+  ]
+}

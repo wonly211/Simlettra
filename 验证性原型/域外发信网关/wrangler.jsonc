@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "simlettra-outbound-gateway-prototype",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-08",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "simlettra-outbound-gateway",
+      "database_id": "00000000-0000-0000-0000-000000000004",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

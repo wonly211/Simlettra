@@ -1,0 +1,22 @@
+allowBuilds:
+  core-js-pure: set this to true or false
+  esbuild: true
+  workerd: true
+packages:
+  - '.'
+minimumReleaseAgeExclude:
+  - '@cloudflare/vite-plugin@1.51.2'
+  - '@cloudflare/vitest-pool-workers@0.21.0'
+  - '@typescript-eslint/eslint-plugin@8.67.0'
+  - '@typescript-eslint/parser@8.67.0'
+  - '@typescript-eslint/project-service@8.67.0'
+  - '@typescript-eslint/scope-manager@8.67.0'
+  - '@typescript-eslint/tsconfig-utils@8.67.0'
+  - '@typescript-eslint/type-utils@8.67.0'
+  - '@typescript-eslint/types@8.67.0'
+  - '@typescript-eslint/typescript-estree@8.67.0'
+  - '@typescript-eslint/utils@8.67.0'
+  - '@typescript-eslint/visitor-keys@8.67.0'
+  - miniflare@5.20260804.0-alpha
+  - typescript-eslint@8.67.0
+  - wrangler@4.120.1

@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1786366371597,
+      "tag": "0000_建立基础验证表",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1786366405679,
+      "tag": "0001_增加邮件摘要",
+      "breakpoints": true
+    }
+  ]
+}

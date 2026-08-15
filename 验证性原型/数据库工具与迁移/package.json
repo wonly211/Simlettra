@@ -1,0 +1,26 @@
+{
+  "name": "simlettra-d1-tooling-migration-prototype",
+  "version": "0.0.0",
+  "private": true,
+  "description": "澄笺 D1 数据库工具与迁移工作流验证性原型",
+  "type": "module",
+  "scripts": {
+    "check:drizzle": "tsc --noEmit -p tsconfig.drizzle.json",
+    "check:prisma": "tsc --noEmit -p tsconfig.prisma.json",
+    "generate:drizzle": "drizzle-kit generate --config drizzle.config.ts",
+    "generate:prisma": "prisma generate --schema prisma/schema.prisma",
+    "validate": "node scripts/run-validation.mjs"
+  },
+  "dependencies": {
+    "@prisma/adapter-d1": "7.9.1",
+    "@prisma/client": "7.9.1",
+    "drizzle-orm": "0.45.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260809.1",
+    "drizzle-kit": "0.31.10",
+    "prisma": "7.9.1",
+    "typescript": "7.0.2",
+    "wrangler": "4.120.0"
+  }
+}

@@ -1,0 +1,65 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id        String    @id
+  email     String    @unique
+  status    String
+  createdAt Int       @map("created_at")
+  addresses Address[]
+  entries   MailboxEntry[]
+
+  @@map("users")
+}
+
+model Address {
+  id          String         @id
+  address     String         @unique
+  ownerUserId String         @map("owner_user_id")
+  kind        String
+  createdAt   Int            @map("created_at")
+  owner       User           @relation(fields: [ownerUserId], references: [id])
+  entries     MailboxEntry[]
+
+  @@index([ownerUserId], map: "addresses_owner_index")
+  @@map("addresses")
+}
+
+model Message {
+  id             String         @id
+  sender         String
+  subject        String
+  previewText    String         @default("") @map("preview_text")
+  receivedAt     Int            @map("received_at")
+  hasAttachments Boolean        @default(false) @map("has_attachments")
+  visibility     String
+  objectKey      String         @map("object_key")
+  entries        MailboxEntry[]
+
+  @@index([receivedAt, id], map: "messages_received_index")
+  @@map("messages")
+}
+
+model MailboxEntry {
+  id                 String  @id
+  userId             String  @map("user_id")
+  messageId          String  @map("message_id")
+  deliveredAddressId String  @map("delivered_address_id")
+  mailbox            String
+  isRead             Boolean @default(false) @map("is_read")
+  isStarred          Boolean @default(false) @map("is_starred")
+  isArchived         Boolean @default(false) @map("is_archived")
+  createdAt          Int     @map("created_at")
+  user               User    @relation(fields: [userId], references: [id])
+  message            Message @relation(fields: [messageId], references: [id])
+  deliveredAddress   Address @relation(fields: [deliveredAddressId], references: [id])
+
+  @@unique([userId, messageId, deliveredAddressId], map: "mailbox_entries_user_message_address_unique")
+  @@index([userId, mailbox, createdAt, id], map: "mailbox_entries_list_index")
+  @@map("mailbox_entries")
+}

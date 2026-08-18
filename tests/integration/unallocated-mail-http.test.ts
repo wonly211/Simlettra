@@ -139,6 +139,11 @@ describe('全域收信与未分配来信 HTTP 边界', { timeout: 45_000 }, () =
     expect(claim.data).toMatchObject({
       periodId: item.periodId,
       address: 'unknown@example.com',
+      claimedAlias: {
+        address: 'unknown@example.com',
+        role: 'alias',
+        isDefaultSender: false,
+      },
       claimedMessageCount: 1,
       newlyAddedMessageCount: 1,
     })
@@ -157,6 +162,20 @@ describe('全域收信与未分配来信 HTTP 边界', { timeout: 45_000 }, () =
             actualDeliveryAddresses: ['unknown@example.com'],
           }),
         ],
+      },
+    })
+    const personalAddresses = await request('/api/auth/personal-addresses', {
+      headers: session.headers,
+    })
+    await expect(personalAddresses.json()).resolves.toMatchObject({
+      data: {
+        policy: { aliasUsed: 1 },
+        addresses: expect.arrayContaining([
+          expect.objectContaining({
+            address: 'unknown@example.com',
+            role: 'alias',
+          }),
+        ]),
       },
     })
     await expect(

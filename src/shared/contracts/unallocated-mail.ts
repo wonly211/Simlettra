@@ -1,4 +1,5 @@
 import type { MailboxAttachment, MailboxHeaderAddress } from './mailbox'
+import type { PersonalAddressSummary } from './personal-address-management'
 
 export interface UnallocatedMailListItem {
   deliveryId: string
@@ -43,6 +44,7 @@ export interface ClaimUnallocatedAddressResponse {
     periodId: string
     addressId: string
     address: string
+    claimedAlias: PersonalAddressSummary
     claimedMessageCount: number
     newlyAddedMessageCount: number
     chargedBytes: number

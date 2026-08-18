@@ -409,8 +409,11 @@
 }
 
 .mailbox-message-row {
+  height: 76px;
   min-height: 76px;
+  max-height: 76px;
   padding: 10px 12px 10px 14px;
+  overflow: hidden;
   border-color: var(--color-border);
   background: var(--color-surface);
 }
@@ -638,7 +641,7 @@
 }
 
 .draft-workspace {
-  grid-template-columns: minmax(330px, 380px) minmax(0, 1fr);
+  grid-template-columns: 224px minmax(330px, 380px) minmax(0, 1fr);
   height: calc(100dvh - 56px);
   min-height: 0;
   overflow: hidden;
@@ -1178,7 +1181,9 @@
   }
 
   .mailbox-message-row {
+    height: 82px;
     min-height: 82px;
+    max-height: 82px;
     padding: 10px 8px 10px 14px;
   }
 
@@ -2439,7 +2444,7 @@
 
   .draft-workspace {
     display: grid;
-    grid-template-columns: 330px minmax(0, 1fr);
+    grid-template-columns: 190px 330px minmax(0, 1fr);
     min-height: 680px;
     border-bottom: 1px solid #cfd8de;
     background: #ffffff;
@@ -2763,7 +2768,7 @@
     }
 
     .draft-workspace {
-      grid-template-columns: 300px minmax(0, 1fr);
+      grid-template-columns: 170px 300px minmax(0, 1fr);
     }
 
     .draft-editor-panel {
@@ -4068,6 +4073,27 @@
     overflow-wrap: anywhere;
   }
 
+  .send-result-diagnostics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 24px;
+    margin: 0;
+    padding: 18px 0;
+    border-bottom: 1px solid #d8dfe4;
+  }
+
+  .send-result-diagnostics dt {
+    color: #74828b;
+    font-size: 12px;
+  }
+
+  .send-result-diagnostics dd {
+    margin: 6px 0 0;
+    color: #34444d;
+    font-size: 14px;
+    overflow-wrap: anywhere;
+  }
+
   .send-recipient-list {
     border-bottom: 1px solid #d8dfe4;
   }
@@ -4117,6 +4143,24 @@
   }
 
   .outbound-callback-field input {
+    font-size: 12px;
+  }
+
+  .outbound-callback-notice {
+    margin-top: 24px;
+    padding: 18px;
+    border: 1px solid #b9d7cf;
+    background: #f1f8f6;
+  }
+
+  .outbound-callback-notice p {
+    margin: 8px 0 14px;
+    color: #40545b;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  .outbound-callback-copy-field input {
     font-size: 12px;
   }
 
@@ -4711,6 +4755,7 @@
     }
 
     .send-result-summary,
+    .send-result-diagnostics,
     .send-recipient-list article,
     .outbound-provider-list > article,
     .outbound-route-list > article,

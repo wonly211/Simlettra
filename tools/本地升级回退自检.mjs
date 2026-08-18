@@ -14,6 +14,7 @@ const previousVersion = '0023-账号邀请码注册.sql'
 const targetVersions = [
   '0024-修复早期逻辑配额表兼容性.sql',
   '0025-补齐早期内部投递容量拒绝事实.sql',
+  '0026-修复后台发信任务重试状态.sql',
 ]
 const targetVersion = targetVersions.at(-1)
 const rebuiltStorageTables = new Set([
@@ -21,6 +22,7 @@ const rebuiltStorageTables = new Set([
   'logical_storage_reservations',
   'logical_storage_usage_entries',
 ])
+const intentionallyChangedSchema = new Set(['validate_background_task_transition'])
 let source
 let upgraded
 let rollback
@@ -64,6 +66,7 @@ try {
   assert.deepEqual(after.existingTableCounts, before.existingTableCounts)
   verifyStorageQuotaCompatibility(upgraded)
   verifyAccountRegistrationInvitations(upgraded)
+  verifyExhaustedBackgroundTaskRepair(upgraded)
   upgraded.close()
   upgraded = undefined
 
@@ -87,7 +90,7 @@ try {
     rollback
       .prepare(
         `SELECT COUNT(*) AS count FROM d1_migrations
-         WHERE name IN (?, ?)`,
+         WHERE name IN (${targetVersions.map(() => '?').join(', ')})`,
       )
       .get(...targetVersions).count,
     0,
@@ -114,6 +117,7 @@ try {
           '逻辑配额策略、预留、用量与触发器完整',
           '内部投递容量拒绝事实完整',
           '账号邀请码一次性使用与域名删除约束',
+          '耗尽重试次数的后台任务正确收口',
           '独立回退目标恢复',
         ],
       },
@@ -236,10 +240,56 @@ function seedRepresentativeData(database) {
                    NULL, ?, ?)`,
       )
       .run(now, now)
+    seedExhaustedBackgroundTask(database, now)
     database.exec('COMMIT;')
   } catch (error) {
     database.exec('ROLLBACK;')
     throw error
+  }
+}
+
+function seedExhaustedBackgroundTask(database, now) {
+  const taskId = 'upgrade-exhausted-background-task'
+  database
+    .prepare(
+      `INSERT INTO background_tasks (
+         id, task_type, target_type, target_reference, input_version,
+         task_key_digest, task_status, priority, attempt_count, max_attempts,
+         next_attempt_at, lease_owner_reference, lease_token, lease_expires_at,
+         last_error_code, last_error_summary, last_error_at, completed_at,
+         created_at, updated_at
+       ) VALUES (
+         ?, 'submit_outbound_send', 'send_operation', 'upgrade-send-operation', 1,
+         ?, 'pending', 1, 0, 5,
+         ?, NULL, 0, NULL,
+         NULL, NULL, NULL, NULL,
+         ?, ?
+       )`,
+    )
+    .run(taskId, Buffer.alloc(32, 23), now, now, now)
+
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const runningAt = now + attempt * 10
+    database
+      .prepare(
+        `UPDATE background_tasks
+         SET task_status = 'running', attempt_count = ?,
+             next_attempt_at = NULL, lease_owner_reference = ?,
+             lease_token = ?, lease_expires_at = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(attempt, `upgrade-worker-${attempt}`, attempt, runningAt + 5, runningAt, taskId)
+    database
+      .prepare(
+        `UPDATE background_tasks
+         SET task_status = 'retry_wait', next_attempt_at = ?,
+             lease_owner_reference = NULL, lease_expires_at = NULL,
+             last_error_code = 'temporary_dependency_unavailable',
+             last_error_summary = '升级前任务等待重试',
+             last_error_at = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(runningAt + 1, runningAt + 1, runningAt + 1, taskId)
   }
 }
 
@@ -292,7 +342,9 @@ function captureEvidence(database, existingSchemaNames) {
       .prepare(`SELECT * FROM logical_storage_usage_entries ORDER BY id`)
       .all(),
   }
-  const stableSchema = selectedSchema.filter((row) => !rebuiltStorageTables.has(row.tbl_name))
+  const stableSchema = selectedSchema.filter(
+    (row) => !rebuiltStorageTables.has(row.tbl_name) && !intentionallyChangedSchema.has(row.name),
+  )
   return {
     migrationVersion: database
       .prepare('SELECT name FROM d1_migrations ORDER BY id DESC LIMIT 1')
@@ -304,6 +356,39 @@ function captureEvidence(database, existingSchemaNames) {
     existingTableCounts,
     foreignKeyViolations: database.prepare('PRAGMA foreign_key_check').all(),
   }
+}
+
+function verifyExhaustedBackgroundTaskRepair(database) {
+  assert.deepEqual(
+    {
+      ...database
+        .prepare(
+          `SELECT task_status, attempt_count, max_attempts, next_attempt_at,
+                  lease_owner_reference, lease_expires_at, last_error_code
+           FROM background_tasks
+           WHERE id = 'upgrade-exhausted-background-task'`,
+        )
+        .get(),
+    },
+    {
+      task_status: 'needs_attention',
+      attempt_count: 5,
+      max_attempts: 5,
+      next_attempt_at: null,
+      lease_owner_reference: null,
+      lease_expires_at: null,
+      last_error_code: 'temporary_dependency_unavailable',
+    },
+  )
+  assert.equal(
+    database
+      .prepare(
+        `SELECT COUNT(*) AS count FROM sqlite_schema
+         WHERE type = 'trigger' AND name = 'validate_background_task_transition'`,
+      )
+      .get().count,
+    1,
+  )
 }
 
 function verifyStorageQuotaCompatibility(database) {

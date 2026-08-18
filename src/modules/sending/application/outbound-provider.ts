@@ -61,6 +61,7 @@ export async function submitOutboundProviderMessage(options: {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
+              Accept: 'application/json',
               'X-Smtp2go-Api-Key': options.credential,
               'User-Agent': 'Simlettra/0.1',
             },
@@ -82,20 +83,20 @@ export async function submitOutboundProviderMessage(options: {
                 mimetype: attachment.mediaType,
                 fileblob: attachment.content,
               })),
+              fastaccept: true,
             }),
           })
     const payload: unknown = await response.json().catch(() => null)
     if (response.ok) {
-      if (
-        options.providerType === 'smtp2go' &&
-        isRecord(payload) &&
-        isRecord(payload.data) &&
-        ((typeof payload.data.failed === 'number' && payload.data.failed > 0) ||
-          payload.data.succeeded === 0)
-      ) {
-        return { kind: 'not_accepted', retryWithFallback: true, code: 'message_rejected' }
+      if (options.providerType === 'smtp2go') {
+        const responseData = smtp2goResponseData(payload)
+        const failed = numericField(responseData, 'failed')
+        const succeeded = numericField(responseData, 'succeeded')
+        if ((failed !== null && failed > 0) || succeeded === 0) {
+          return { kind: 'not_accepted', retryWithFallback: true, code: 'message_rejected' }
+        }
       }
-      const submissionId = providerSubmissionId(payload)
+      const submissionId = providerSubmissionId(payload, options.providerType)
       return submissionId
         ? { kind: 'accepted', submissionId }
         : { kind: 'unknown', code: 'provider_response_invalid' }
@@ -127,7 +128,7 @@ function sanitizeHeaderValue(value: string): string {
   return value.replace(/[\r\n]/g, ' ').slice(0, 1000)
 }
 
-function providerSubmissionId(value: unknown): string | null {
+function providerSubmissionId(value: unknown, providerType: OutboundProviderType): string | null {
   if (!isRecord(value)) return null
   if (typeof value.id === 'string') return value.id.slice(0, 500)
   if (isRecord(value.data) && typeof value.data.id === 'string') return value.data.id.slice(0, 500)
@@ -140,6 +141,44 @@ function providerSubmissionId(value: unknown): string | null {
     typeof value.data.email_id[0] === 'string'
   ) {
     return value.data.email_id[0].slice(0, 500)
+  }
+  if (providerType === 'smtp2go') {
+    const responseData = smtp2goResponseData(value)
+    if (responseData && typeof responseData.email_id === 'string') {
+      return responseData.email_id.slice(0, 500)
+    }
+    if (
+      responseData &&
+      Array.isArray(responseData.email_id) &&
+      typeof responseData.email_id[0] === 'string'
+    ) {
+      return responseData.email_id[0].slice(0, 500)
+    }
+  }
+  return null
+}
+
+function smtp2goResponseData(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null
+  if (isRecord(value.data)) {
+    if (isRecord(value.data.email_response)) return value.data.email_response
+    return value.data
+  }
+  if (isRecord(value.email_response)) return value.email_response
+  // SMTP2GO has returned the email response at the top level in older API
+  // responses. Accept that shape as well so a successful submission does not
+  // become a false "result unknown" state only because of the envelope.
+  if ('succeeded' in value || 'failed' in value || 'email_id' in value) return value
+  return null
+}
+
+function numericField(value: Record<string, unknown> | null, key: string): number | null {
+  if (!value) return null
+  const candidate = value[key]
+  if (typeof candidate === 'number' && Number.isFinite(candidate)) return candidate
+  if (typeof candidate === 'string' && candidate.trim() !== '') {
+    const parsed = Number(candidate)
+    return Number.isFinite(parsed) ? parsed : null
   }
   return null
 }

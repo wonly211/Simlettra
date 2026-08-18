@@ -77,7 +77,7 @@ describe('管理员本地备份清单', { timeout: 60_000 }, () => {
       entries: Array<{ id: string; kind: string; logicalKey: string; sizeBytes: number }>
     }>()
     expect(manifest.product).toBe('澄笺 | Simlettra')
-    expect(manifest.migrationVersion).toBe('0025-补齐早期内部投递容量拒绝事实.sql')
+    expect(manifest.migrationVersion).toBe('0026-修复后台发信任务重试状态.sql')
     expect(manifest.entries.some((entry) => entry.logicalKey.startsWith('users/'))).toBe(true)
 
     const userEntry = await env.DB.prepare(

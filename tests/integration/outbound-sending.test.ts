@@ -6,8 +6,16 @@ import {
   SESSION_COOKIE_NAME,
 } from '../../src/shared/contracts/authentication'
 import { encodeInitializationKeyHeader } from '../../src/shared/contracts/initialization-key-header'
-import { createMailObjectStore } from '../../src/modules/mail-receiving/public'
-import { processOutboundSendTask } from '../../src/modules/sending/public'
+import type { BackgroundTaskMessage } from '../../src/shared/contracts/background-task'
+import {
+  createMailObjectStore,
+  type MailObjectStore,
+} from '../../src/modules/mail-receiving/public'
+import {
+  processOutboundSendTask,
+  sendDraft as executeSendDraft,
+} from '../../src/modules/sending/public'
+import { handleBackgroundTaskQueue } from '../../src/worker/handlers/queue'
 
 interface OutboundTestEnvironment extends Env {
   CONFIG_KEY: string
@@ -229,7 +237,16 @@ describe('域外发信服务与安全切换', { timeout: 45_000 }, () => {
       data: {
         send: {
           workflowStatus: 'finished',
-          recipients: [{ status: 'delivered' }],
+          queue: { status: 'pending', attemptCount: 0, errorCode: null },
+          recipients: [
+            {
+              status: 'delivered',
+              providerType: 'smtp2go',
+              providerResult: 'accepted',
+              providerSubmissionId: 'smtp2go-accepted',
+              providerErrorCode: null,
+            },
+          ],
         },
       },
     })
@@ -237,6 +254,285 @@ describe('域外发信服务与安全切换', { timeout: 45_000 }, () => {
       `SELECT attempt_status FROM outbound_submission_attempts ORDER BY attempt_number`,
     ).all<{ attempt_status: string }>()
     expect(attempts.results.map((row) => row.attempt_status)).toEqual(['not_accepted', 'accepted'])
+  })
+
+  it('凭据解密失败不会提前进入 submitting，修复 CONFIG_KEY 后仍能真正调用 SMTP2GO', async () => {
+    await initializeSystem()
+    const session = extractAuthenticationCookies(await login())
+    const domainId = await currentDomainId()
+    const smtp2go = await saveProvider(session, 'SMTP2GO', 'smtp2go', 'smtp2go-secret-key')
+    await request(`/api/auth/admin/outbound/domains/${domainId}/route`, {
+      method: 'PUT',
+      headers: jsonMutationHeaders(session),
+      body: JSON.stringify({ providerConfigIds: [smtp2go.id] }),
+    })
+    const draft = await createExternalDraft(session, 'credential-retry@example.net')
+    const accepted = await (
+      await sendDraft(draft, session)
+    ).json<{ data: { send: { id: string } } }>()
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ data: { succeeded: 1, failed: 0, email_id: 'smtp2go-after-retry' } }),
+          { status: 200 },
+        ),
+      )
+    const startedAt = Date.now()
+
+    await expect(
+      processOutboundSendTask({
+        database: env.DB,
+        objectStore: createMailObjectStore(testEnvironment, 'r2'),
+        encryptionKeyBase64: btoa('11111111111111111111111111111111'),
+        sendOperationId: accepted.data.send.id,
+        fetcher,
+        now: startedAt,
+      }),
+    ).resolves.toEqual({
+      status: 'retry',
+      nextAttemptAt: startedAt + 5 * 60_000,
+      errorCode: 'outbound_credential_decryption_failed',
+    })
+    expect(fetcher).not.toHaveBeenCalled()
+    await expect(readOutboundSubmissionState()).resolves.toEqual({
+      delivery_status: 'waiting',
+      progress_status: 'ready',
+      attempt_count: 0,
+    })
+
+    await expect(
+      processOutboundSendTask({
+        database: env.DB,
+        objectStore: createMailObjectStore(testEnvironment, 'r2'),
+        encryptionKeyBase64: testEnvironment.CONFIG_KEY,
+        sendOperationId: accepted.data.send.id,
+        fetcher,
+        now: startedAt + 5 * 60_000,
+      }),
+    ).resolves.toEqual({ status: 'succeeded' })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    await expect(readOutboundSubmissionState()).resolves.toEqual({
+      delivery_status: 'submitted',
+      progress_status: 'accepted',
+      attempt_count: 1,
+    })
+  })
+
+  it('真实 Queue consumer 会调用 SMTP2GO、确认任务并保存 email_id', async () => {
+    await initializeSystem()
+    const session = extractAuthenticationCookies(await login())
+    const domainId = await currentDomainId()
+    const smtp2go = await saveProvider(session, 'SMTP2GO', 'smtp2go', 'smtp2go-secret-key')
+    await request(`/api/auth/admin/outbound/domains/${domainId}/route`, {
+      method: 'PUT',
+      headers: jsonMutationHeaders(session),
+      body: JSON.stringify({ providerConfigIds: [smtp2go.id] }),
+    })
+    const draft = await createExternalDraft(session, 'queue-consumer@example.net')
+    const accepted = await (
+      await sendDraft(draft, session)
+    ).json<{ data: { send: { id: string } } }>()
+    const task = await env.DB.prepare(
+      `SELECT id, input_version FROM background_tasks
+       WHERE task_type = 'submit_outbound_send' AND target_reference = ?1`,
+    )
+      .bind(accepted.data.send.id)
+      .first<{ id: string; input_version: number }>()
+    if (!task) throw new Error('域外发信 Queue 任务不存在')
+
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ data: { succeeded: 1, failed: 0, email_id: 'smtp2go-from-queue' } }),
+          { status: 200 },
+        ),
+      )
+    vi.stubGlobal('fetch', fetcher)
+    let acknowledged = false
+    let retryDelay: number | null = null
+    const message = {
+      id: crypto.randomUUID(),
+      timestamp: new Date(),
+      attempts: 1,
+      body: { taskId: task.id, inputVersion: task.input_version },
+      ack() {
+        acknowledged = true
+      },
+      retry(options?: { delaySeconds?: number }) {
+        retryDelay = options?.delaySeconds ?? 0
+      },
+    }
+    const batch = {
+      queue: 'simlettra-test-tasks',
+      messages: [message],
+      ackAll() {},
+      retryAll() {},
+    } as unknown as MessageBatch<BackgroundTaskMessage>
+    try {
+      await handleBackgroundTaskQueue(batch, testEnvironment)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+
+    expect(acknowledged).toBe(true)
+    expect(retryDelay).toBeNull()
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(fetcher.mock.calls[0]?.[0]).toBe('https://api.smtp2go.com/v3/email/send')
+    await expect(
+      env.DB.prepare(`SELECT task_status, last_error_code FROM background_tasks WHERE id = ?1`)
+        .bind(task.id)
+        .first(),
+    ).resolves.toMatchObject({ task_status: 'succeeded', last_error_code: null })
+    await expect(
+      env.DB.prepare(
+        `SELECT attempt_status, provider_submission_id
+         FROM outbound_submission_attempts WHERE send_operation_id = ?1`,
+      )
+        .bind(accepted.data.send.id)
+        .first(),
+    ).resolves.toMatchObject({
+      attempt_status: 'accepted',
+      provider_submission_id: 'smtp2go-from-queue',
+    })
+  })
+
+  it('批量入队失败时会单独补投域外发信任务', async () => {
+    await initializeSystem()
+    const session = extractAuthenticationCookies(await login())
+    const domainId = await currentDomainId()
+    const smtp2go = await saveProvider(session, 'SMTP2GO', 'smtp2go', 'smtp2go-secret-key')
+    await request(`/api/auth/admin/outbound/domains/${domainId}/route`, {
+      method: 'PUT',
+      headers: jsonMutationHeaders(session),
+      body: JSON.stringify({ providerConfigIds: [smtp2go.id] }),
+    })
+    const draft = await createExternalDraft(session, 'queue-recovery@example.net')
+    const administrator = await env.DB.prepare(
+      `SELECT current_admin_user_id FROM system_instances WHERE singleton_id = 1`,
+    ).first<{ current_admin_user_id: string }>()
+    if (!administrator) throw new Error('测试管理员不存在')
+
+    const individuallyQueued: BackgroundTaskMessage[] = []
+    const queue = {
+      async send(message: BackgroundTaskMessage) {
+        individuallyQueued.push(message)
+      },
+      async sendBatch() {
+        throw new Error('模拟批量入队失败')
+      },
+    } as unknown as Queue<BackgroundTaskMessage>
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const result = await executeSendDraft({
+      database: env.DB,
+      objectStore: createMailObjectStore(testEnvironment, 'r2'),
+      storageMode: 'r2',
+      queue,
+      userId: administrator.current_admin_user_id,
+      draftId: draft.id,
+      input: {
+        requestKey: crypto.randomUUID(),
+        expectedRevisionNumber: draft.revisionNumber,
+      },
+      audit: {
+        requestTraceId: crypto.randomUUID(),
+        sourceIp: '203.0.113.92',
+        browserFamily: 'Chrome',
+      },
+    }).finally(() => consoleError.mockRestore())
+
+    expect(individuallyQueued).toEqual([{ taskId: result.send.queue.taskId, inputVersion: 1 }])
+    expect(result.send.queue).toMatchObject({
+      status: 'pending',
+      attemptCount: 0,
+      errorCode: null,
+    })
+    await expect(
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM background_tasks
+         WHERE id <> ?1 AND last_error_code = 'queue_enqueue_failed'`,
+      )
+        .bind(result.send.queue.taskId)
+        .first<{ count: number }>(),
+    ).resolves.toEqual({ count: 2 })
+  })
+
+  it('邮件对象暂不可见时保持 waiting，重新可见后才调用 SMTP2GO', async () => {
+    await initializeSystem()
+    const session = extractAuthenticationCookies(await login())
+    const domainId = await currentDomainId()
+    const smtp2go = await saveProvider(session, 'SMTP2GO', 'smtp2go', 'smtp2go-secret-key')
+    await request(`/api/auth/admin/outbound/domains/${domainId}/route`, {
+      method: 'PUT',
+      headers: jsonMutationHeaders(session),
+      body: JSON.stringify({ providerConfigIds: [smtp2go.id] }),
+    })
+    const draft = await createExternalDraft(session, 'object-retry@example.net')
+    const accepted = await (
+      await sendDraft(draft, session)
+    ).json<{ data: { send: { id: string } } }>()
+    const realStore = createMailObjectStore(testEnvironment, 'r2')
+    let firstRead = true
+    const delayedStore: MailObjectStore = {
+      mode: realStore.mode,
+      put: (options) => realStore.put(options),
+      async get(key) {
+        if (firstRead) {
+          firstRead = false
+          return null
+        }
+        return realStore.get(key)
+      },
+      delete: (key) => realStore.delete(key),
+    }
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ data: { succeeded: 1, failed: 0, email_id: 'smtp2go-after-object' } }),
+          { status: 200 },
+        ),
+      )
+    const startedAt = Date.now()
+
+    await expect(
+      processOutboundSendTask({
+        database: env.DB,
+        objectStore: delayedStore,
+        encryptionKeyBase64: testEnvironment.CONFIG_KEY,
+        sendOperationId: accepted.data.send.id,
+        fetcher,
+        now: startedAt,
+      }),
+    ).resolves.toEqual({
+      status: 'retry',
+      nextAttemptAt: startedAt + 60_000,
+      errorCode: 'send_body_temporarily_unavailable',
+    })
+    expect(fetcher).not.toHaveBeenCalled()
+    await expect(readOutboundSubmissionState()).resolves.toEqual({
+      delivery_status: 'waiting',
+      progress_status: 'ready',
+      attempt_count: 0,
+    })
+
+    await expect(
+      processOutboundSendTask({
+        database: env.DB,
+        objectStore: delayedStore,
+        encryptionKeyBase64: testEnvironment.CONFIG_KEY,
+        sendOperationId: accepted.data.send.id,
+        fetcher,
+        now: startedAt + 60_000,
+      }),
+    ).resolves.toEqual({ status: 'succeeded' })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    await expect(readOutboundSubmissionState()).resolves.toEqual({
+      delivery_status: 'submitted',
+      progress_status: 'accepted',
+      attempt_count: 1,
+    })
   })
 
   it('网络结果未知时保留配额并停止自动重发', async () => {
@@ -377,6 +673,20 @@ async function currentDomainId() {
   const row = await env.DB.prepare(`SELECT id FROM mail_domains LIMIT 1`).first<{ id: string }>()
   if (!row) throw new Error('测试域名不存在')
   return row.id
+}
+
+async function readOutboundSubmissionState() {
+  return env.DB.prepare(
+    `SELECT recipient.delivery_status, progress.progress_status,
+            (SELECT COUNT(*) FROM outbound_submission_attempts) AS attempt_count
+     FROM send_recipients recipient
+     JOIN send_recipient_route_progress progress ON progress.send_recipient_id = recipient.id
+     WHERE recipient.route_channel = 'external' LIMIT 1`,
+  ).first<{
+    delivery_status: string
+    progress_status: string
+    attempt_count: number
+  }>()
 }
 
 async function initializeSystem() {

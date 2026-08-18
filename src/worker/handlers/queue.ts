@@ -26,10 +26,14 @@ export async function handleBackgroundTaskQueue(
       continue
     }
     try {
+      let retryAt: number | null = null
       await processBackgroundTaskMessage({
         database: environment.DB,
         message: message.body,
         workerReference: `queue:${message.id}`,
+        onRetryScheduled: (nextAttemptAt) => {
+          retryAt = nextAttemptAt
+        },
         executeTask: async (task) => {
           const objectStore = createMailObjectStore(
             environment,
@@ -156,8 +160,21 @@ export async function handleBackgroundTaskQueue(
           return { status: 'needs_attention', errorCode: 'unsupported_task_type' }
         },
       })
-      message.ack()
-    } catch {
+      if (retryAt === null) {
+        message.ack()
+      } else {
+        const delaySeconds = Math.min(43_200, Math.max(1, Math.ceil((retryAt - Date.now()) / 1000)))
+        message.retry({ delaySeconds })
+      }
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: 'background_task_queue_error',
+          taskId: message.body.taskId,
+          inputVersion: message.body.inputVersion,
+          errorName: error instanceof Error ? error.name : 'unknown_error',
+        }),
+      )
       message.retry()
     }
   }

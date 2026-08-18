@@ -46,7 +46,7 @@ export interface BackgroundTaskExecutionContext {
 
 export type BackgroundTaskExecutionResult =
   | { status: 'succeeded' }
-  | { status: 'retry'; nextAttemptAt: number }
+  | { status: 'retry'; nextAttemptAt: number; errorCode?: string }
   | { status: 'needs_attention'; errorCode: string }
 
 export function isBackgroundTaskMessage(value: unknown): value is BackgroundTaskMessage {
@@ -98,6 +98,7 @@ export async function processBackgroundTaskMessage(options: {
   database: D1Database
   message: BackgroundTaskMessage
   executeTask?: (context: BackgroundTaskExecutionContext) => Promise<BackgroundTaskExecutionResult>
+  onRetryScheduled?: (nextAttemptAt: number) => void
   workerReference?: string
   now?: number
 }): Promise<'completed' | 'ignored'> {
@@ -108,20 +109,14 @@ export async function processBackgroundTaskMessage(options: {
   if (task.task_status === 'succeeded' || task.task_status === 'cancelled') return 'ignored'
   if (task.task_status === 'needs_attention') return 'ignored'
   if (
-    (task.task_status === 'pending' || task.task_status === 'retry_wait') &&
-    (task.next_attempt_at === null || task.next_attempt_at > now)
+    task.attempt_count >= task.max_attempts &&
+    (task.task_status === 'pending' || task.task_status === 'retry_wait')
   ) {
-    return 'ignored'
+    await finishExhaustedTaskWithAttention(options.database, task, now)
+    return 'completed'
   }
-  if (
-    task.task_status === 'running' &&
-    (task.lease_expires_at === null || task.lease_expires_at > now)
-  ) {
-    return 'ignored'
-  }
-  if (task.attempt_count >= task.max_attempts) {
+  if (task.attempt_count >= task.max_attempts && task.task_status === 'running') {
     if (
-      task.task_status === 'running' &&
       task.lease_expires_at !== null &&
       task.lease_expires_at <= now &&
       task.lease_owner_reference
@@ -139,6 +134,18 @@ export async function processBackgroundTaskMessage(options: {
       )
       return 'completed'
     }
+    return 'ignored'
+  }
+  if (
+    (task.task_status === 'pending' || task.task_status === 'retry_wait') &&
+    (task.next_attempt_at === null || task.next_attempt_at > now)
+  ) {
+    return 'ignored'
+  }
+  if (
+    task.task_status === 'running' &&
+    (task.lease_expires_at === null || task.lease_expires_at > now)
+  ) {
     return 'ignored'
   }
 
@@ -165,7 +172,23 @@ export async function processBackgroundTaskMessage(options: {
     if (execution.status === 'needs_attention') {
       await finishWithAttention(options.database, claimed, execution.errorCode, now)
     } else if (execution.status === 'retry') {
-      await scheduleRetry(options.database, claimed, execution.nextAttemptAt, now, null)
+      if (claimed.attemptNumber >= claimed.task.max_attempts) {
+        await finishWithAttention(
+          options.database,
+          claimed,
+          execution.errorCode ?? 'maximum_attempts_reached',
+          now,
+        )
+      } else {
+        await scheduleRetry(
+          options.database,
+          claimed,
+          execution.nextAttemptAt,
+          now,
+          execution.errorCode ?? null,
+        )
+        options.onRetryScheduled?.(execution.nextAttemptAt)
+      }
     } else {
       await finishSucceeded(options.database, claimed, now)
     }
@@ -174,10 +197,34 @@ export async function processBackgroundTaskMessage(options: {
       await finishWithAttention(options.database, claimed, 'task_execution_failed', now)
     } else {
       const backoffMs = Math.min(60 * 60 * 1000, 2 ** claimed.attemptNumber * 60 * 1000)
-      await scheduleRetry(options.database, claimed, now + backoffMs, now, 'task_execution_failed')
+      const nextAttemptAt = now + backoffMs
+      await scheduleRetry(options.database, claimed, nextAttemptAt, now, 'task_execution_failed')
+      options.onRetryScheduled?.(nextAttemptAt)
     }
   }
   return 'completed'
+}
+
+async function finishExhaustedTaskWithAttention(
+  database: D1Database,
+  task: BackgroundTaskRow,
+  now: number,
+): Promise<void> {
+  const result = await database
+    .prepare(
+      `UPDATE background_tasks
+       SET task_status = 'needs_attention', next_attempt_at = NULL,
+           lease_owner_reference = NULL, lease_expires_at = NULL,
+           last_error_code = COALESCE(last_error_code, 'maximum_attempts_reached'),
+           last_error_summary = '后台任务已达到最大尝试次数，需要管理员检查',
+           last_error_at = ?1, updated_at = ?1
+       WHERE id = ?2 AND input_version = ?3
+         AND task_status IN ('pending', 'retry_wait')
+         AND attempt_count >= max_attempts`,
+    )
+    .bind(now, task.id, task.input_version)
+    .run()
+  if (result.meta.changes !== 1) throw new Error('后台任务最大尝试次数状态已经发生变化')
 }
 
 async function finishSucceeded(
@@ -545,9 +592,9 @@ function finishTaskStatement(
        SET task_status = ?1, next_attempt_at = NULL,
            lease_owner_reference = NULL, lease_expires_at = NULL,
            last_error_code = ?2, last_error_summary = ?3,
-           last_error_at = ?4, completed_at = ?5, updated_at = ?5
-       WHERE id = ?6 AND task_status = 'running'
-         AND attempt_count = ?7 AND lease_token = ?8 AND lease_owner_reference = ?9`,
+           last_error_at = ?4, completed_at = ?5, updated_at = ?6
+       WHERE id = ?7 AND task_status = 'running'
+         AND attempt_count = ?8 AND lease_token = ?9 AND lease_owner_reference = ?10`,
     )
     .bind(
       status,
@@ -555,6 +602,7 @@ function finishTaskStatement(
       errorSummary,
       errorCode === null ? null : now,
       status === 'succeeded' ? now : null,
+      now,
       claimed.task.id,
       claimed.attemptNumber,
       claimed.leaseToken,

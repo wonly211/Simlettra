@@ -8,6 +8,17 @@ export type SendDeliveryStatus =
   | 'failed'
   | 'unknown'
 
+export type SendProviderResult = 'accepted' | 'not_accepted' | 'unknown'
+
+export type SendQueueStatus =
+  | 'not_created'
+  | 'pending'
+  | 'running'
+  | 'retry_wait'
+  | 'needs_attention'
+  | 'succeeded'
+  | 'cancelled'
+
 export interface SendDraftRequest {
   requestKey: string
   expectedRevisionNumber: number
@@ -20,6 +31,17 @@ export interface SendRecipientResult {
   channel: 'internal' | 'external'
   status: SendDeliveryStatus
   failureCode: string | null
+  providerType: OutboundProviderType | null
+  providerResult: SendProviderResult | null
+  providerSubmissionId: string | null
+  providerErrorCode: string | null
+}
+
+export interface SendQueueResult {
+  taskId: string | null
+  status: SendQueueStatus
+  attemptCount: number
+  errorCode: string | null
 }
 
 export interface SendOperationResult {
@@ -31,6 +53,7 @@ export interface SendOperationResult {
   subject: string
   senderAddress: string
   payloadSizeBytes: number
+  queue: SendQueueResult
   recipients: SendRecipientResult[]
 }
 

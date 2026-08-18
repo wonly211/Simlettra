@@ -1,7 +1,18 @@
 import type { MailObjectStore } from '../../mail-receiving/public'
 import { sha256Bytes } from '../../mail-receiving/domain/content-digest'
-import { decryptOutboundCredential } from './outbound-management'
+import { decryptOutboundCredential, OutboundConfigurationError } from './outbound-management'
 import { submitOutboundProviderMessage, type OutboundProviderResult } from './outbound-provider'
+
+const OBJECT_READ_RETRY_DELAY_MS = 60_000
+const CREDENTIAL_RETRY_DELAY_MS = 5 * 60_000
+
+type OutboundSendTaskResult =
+  | { status: 'succeeded' }
+  | { status: 'retry'; nextAttemptAt: number; errorCode: string }
+  | { status: 'needs_attention'; errorCode: string }
+
+type RecipientSubmissionResult =
+  { status: 'completed' } | { status: 'retry'; nextAttemptAt: number; errorCode: string }
 
 interface SubmissionOperationRow {
   id: string
@@ -53,33 +64,47 @@ export async function processOutboundSendTask(options: {
   sendOperationId: string
   fetcher?: typeof fetch
   now?: number
-}): Promise<{ status: 'succeeded' } | { status: 'needs_attention'; errorCode: string }> {
+}): Promise<OutboundSendTaskResult> {
+  const now = options.now ?? Date.now()
   const operation = await loadOperation(options.database, options.sendOperationId)
   if (!operation) return { status: 'needs_attention', errorCode: 'send_operation_not_found' }
   if (operation.workflow_status === 'finished') return { status: 'succeeded' }
-  const bodyStored = await options.objectStore.get(operation.body_object_key)
-  if (!bodyStored) return { status: 'needs_attention', errorCode: 'send_body_missing' }
+  let bodyStored
+  try {
+    bodyStored = await options.objectStore.get(operation.body_object_key)
+  } catch {
+    return retryResult(now, OBJECT_READ_RETRY_DELAY_MS, 'send_body_read_failed')
+  }
+  if (!bodyStored) {
+    return retryResult(now, OBJECT_READ_RETRY_DELAY_MS, 'send_body_temporarily_unavailable')
+  }
   const attachments = await loadAttachments(options.database, operation.message_id)
-  const attachmentPayloads = await Promise.all(
-    attachments.map(async (attachment) => {
-      const stored = await options.objectStore.get(attachment.object_key)
-      if (!stored) throw new Error('发信附件对象缺失')
-      return {
-        fileName: attachment.untrusted_file_name || 'attachment',
-        mediaType: attachment.media_type,
-        content: bytesToBase64(new Uint8Array(stored.bytes)),
-      }
-    }),
-  )
+  const attachmentPayloads: Array<{ fileName: string; mediaType: string; content: string }> = []
+  for (const attachment of attachments) {
+    let stored
+    try {
+      stored = await options.objectStore.get(attachment.object_key)
+    } catch {
+      return retryResult(now, OBJECT_READ_RETRY_DELAY_MS, 'send_attachment_read_failed')
+    }
+    if (!stored) {
+      return retryResult(now, OBJECT_READ_RETRY_DELAY_MS, 'send_attachment_temporarily_unavailable')
+    }
+    attachmentPayloads.push({
+      fileName: attachment.untrusted_file_name || 'attachment',
+      mediaType: attachment.media_type,
+      content: bytesToBase64(new Uint8Array(stored.bytes)),
+    })
+  }
   const body = new TextDecoder().decode(bodyStored.bytes)
   const recipients = await loadRecipients(options.database, operation.id)
   for (const recipient of recipients) {
     if (!['waiting', 'submitting'].includes(recipient.delivery_status)) continue
     if (recipient.delivery_status === 'submitting' || recipient.progress_status === 'submitting') {
-      await markInterruptedAttemptUnknown(options.database, recipient, options.now ?? Date.now())
+      await markInterruptedAttemptUnknown(options.database, recipient, now)
       continue
     }
-    await submitRecipient({
+    const submission = await submitRecipient({
       ...options,
       fetcher: options.fetcher ?? fetch,
       operation,
@@ -87,8 +112,9 @@ export async function processOutboundSendTask(options: {
       body,
       attachments: attachmentPayloads,
     })
+    if (submission.status === 'retry') return submission
   }
-  await finishOperationIfSettled(options.database, operation.id, options.now ?? Date.now())
+  await finishOperationIfSettled(options.database, operation.id, now)
   return { status: 'succeeded' }
 }
 
@@ -102,7 +128,7 @@ async function submitRecipient(options: {
   body: string
   attachments: Array<{ fileName: string; mediaType: string; content: string }>
   now?: number
-}): Promise<void> {
+}): Promise<RecipientSubmissionResult> {
   let recipient = options.recipient
   while (recipient.delivery_status === 'waiting') {
     const entry = await loadRouteEntry(
@@ -117,7 +143,7 @@ async function submitRecipient(options: {
         'outbound_route_exhausted',
         options.now ?? Date.now(),
       )
-      return
+      return { status: 'completed' }
     }
     if (entry.configuration_status === 'disabled') {
       recipient = await moveToFallback(
@@ -129,6 +155,28 @@ async function submitRecipient(options: {
       )
       continue
     }
+    let credential: string
+    try {
+      credential = await decryptOutboundCredential({
+        ...(options.encryptionKeyBase64
+          ? { encryptionKeyBase64: options.encryptionKeyBase64 }
+          : {}),
+        configurationKey: entry.configuration_key,
+        configurationVersion: entry.configuration_version,
+        ciphertext: entry.credential_ciphertext,
+        nonce: entry.credential_nonce,
+      })
+    } catch (error) {
+      return retryResult(
+        options.now ?? Date.now(),
+        CREDENTIAL_RETRY_DELAY_MS,
+        error instanceof OutboundConfigurationError && error.field === 'encryptionKey'
+          ? 'outbound_config_key_unavailable'
+          : 'outbound_credential_decryption_failed',
+      )
+    }
+    // 只有真正准备调用供应商之后，才把收件人推进到 submitting。
+    // 这样配置或密文错误不会被下一次任务误判为“供应商结果未知”。
     const attempt = await prepareAttempt(
       options.database,
       options.operation,
@@ -136,13 +184,6 @@ async function submitRecipient(options: {
       entry,
       options.now ?? Date.now(),
     )
-    const credential = await decryptOutboundCredential({
-      ...(options.encryptionKeyBase64 ? { encryptionKeyBase64: options.encryptionKeyBase64 } : {}),
-      configurationKey: entry.configuration_key,
-      configurationVersion: entry.configuration_version,
-      ciphertext: entry.credential_ciphertext,
-      nonce: entry.credential_nonce,
-    })
     const result = await callProvider({
       fetcher: options.fetcher,
       providerType: entry.provider_type,
@@ -156,11 +197,11 @@ async function submitRecipient(options: {
     const now = options.now ?? Date.now()
     if (result.kind === 'accepted') {
       await markAccepted(options.database, recipient, attempt.id, result.submissionId, now)
-      return
+      return { status: 'completed' }
     }
     if (result.kind === 'unknown') {
       await markUnknown(options.database, recipient, attempt.id, result.code, now)
-      return
+      return { status: 'completed' }
     }
     const hasFallback = await hasRouteEntry(
       options.database,
@@ -178,8 +219,17 @@ async function submitRecipient(options: {
       continue
     }
     await markNotAcceptedFailed(options.database, recipient, attempt.id, result.code, now)
-    return
+    return { status: 'completed' }
   }
+  return { status: 'completed' }
+}
+
+function retryResult(
+  now: number,
+  delayMs: number,
+  errorCode: string,
+): Extract<OutboundSendTaskResult, { status: 'retry' }> {
+  return { status: 'retry', nextAttemptAt: now + delayMs, errorCode }
 }
 
 async function loadOperation(

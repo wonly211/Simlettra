@@ -3,6 +3,8 @@ import type { BackgroundTaskMessage } from '../../../shared/contracts/background
 import type {
   SendDraftRequest,
   SendOperationResult,
+  SendProviderResult,
+  SendQueueStatus,
   SendRecipientResult,
 } from '../../../shared/contracts/sending'
 import type { StorageMode } from '../../../shared/contracts/storage-mode'
@@ -484,7 +486,13 @@ export async function sendDraft(options: {
     }
     throw error
   }
-  await wakeTasks(options.queue, [...work.messages, ...notificationWork.messages])
+  await wakeTasks({
+    database: options.database,
+    queue: options.queue,
+    messages: [...work.messages, ...notificationWork.messages],
+    criticalTaskId: work.outboundTask?.id ?? null,
+    now,
+  })
   return {
     replayed: false,
     send: await getSendOperation({
@@ -524,13 +532,48 @@ export async function getSendOperation(options: {
       sender_address: string
     }>()
   if (!operation) throw new SendAccessError('not_found', '发送记录不存在')
+  const queueTask = await options.database
+    .prepare(
+      `SELECT id, task_status, attempt_count, last_error_code
+       FROM background_tasks
+       WHERE task_type = 'submit_outbound_send'
+         AND target_type = 'send_operation'
+         AND target_reference = ?1
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+    )
+    .bind(operation.id)
+    .first<{
+      id: string
+      task_status: string
+      attempt_count: number
+      last_error_code: string | null
+    }>()
   const recipientRows = await options.database
     .prepare(
-      `SELECT id, recipient_role, sequence_number, address_text, route_channel,
-              delivery_status, failure_code
-       FROM send_recipients WHERE send_operation_id = ?1
-       ORDER BY CASE recipient_role WHEN 'to' THEN 0 WHEN 'cc' THEN 1 ELSE 2 END,
-                sequence_number, id`,
+      `SELECT recipient.id, recipient.recipient_role, recipient.sequence_number,
+              recipient.address_text, recipient.route_channel,
+              recipient.delivery_status, recipient.failure_code,
+              entry.provider_type, attempt.attempt_status,
+              attempt.provider_submission_id, attempt.error_code
+       FROM send_recipients recipient
+       LEFT JOIN outbound_submission_attempt_recipients attempt_link
+         ON attempt_link.send_recipient_id = recipient.id
+        AND attempt_link.outbound_submission_attempt_id = (
+          SELECT latest_link.outbound_submission_attempt_id
+          FROM outbound_submission_attempt_recipients latest_link
+          JOIN outbound_submission_attempts latest_attempt
+            ON latest_attempt.id = latest_link.outbound_submission_attempt_id
+          WHERE latest_link.send_recipient_id = recipient.id
+          ORDER BY latest_attempt.created_at DESC, latest_attempt.id DESC
+          LIMIT 1
+        )
+       LEFT JOIN outbound_submission_attempts attempt
+         ON attempt.id = attempt_link.outbound_submission_attempt_id
+       LEFT JOIN outbound_route_snapshot_entries entry
+         ON entry.id = attempt.route_snapshot_entry_id
+       WHERE recipient.send_operation_id = ?1
+       ORDER BY CASE recipient.recipient_role WHEN 'to' THEN 0 WHEN 'cc' THEN 1 ELSE 2 END,
+                recipient.sequence_number, recipient.id`,
     )
     .bind(operation.id)
     .all<{
@@ -541,6 +584,10 @@ export async function getSendOperation(options: {
       route_channel: string
       delivery_status: string
       failure_code: string | null
+      provider_type: string | null
+      attempt_status: string | null
+      provider_submission_id: string | null
+      error_code: string | null
     }>()
   const rejectedRows = await options.database
     .prepare(
@@ -567,6 +614,10 @@ export async function getSendOperation(options: {
         'external' | 'internal',
       status: row.delivery_status as SendRecipientResult['status'],
       failureCode: row.failure_code,
+      providerType: normalizeProviderType(row.provider_type),
+      providerResult: normalizeProviderResult(row.attempt_status),
+      providerSubmissionId: row.provider_submission_id,
+      providerErrorCode: row.error_code,
     })),
     ...rejectedRows.results.map((row) => ({
       id: row.id,
@@ -576,6 +627,10 @@ export async function getSendOperation(options: {
       channel: 'internal' as const,
       status: 'failed' as const,
       failureCode: row.failure_code,
+      providerType: null,
+      providerResult: null,
+      providerSubmissionId: null,
+      providerErrorCode: null,
     })),
   ].sort(
     (left, right) =>
@@ -591,6 +646,12 @@ export async function getSendOperation(options: {
     subject: operation.subject,
     senderAddress: operation.sender_address,
     payloadSizeBytes: operation.payload_size_bytes,
+    queue: {
+      taskId: queueTask?.id ?? null,
+      status: normalizeQueueStatus(queueTask?.task_status),
+      attemptCount: queueTask?.attempt_count ?? 0,
+      errorCode: queueTask?.last_error_code ?? null,
+    },
     recipients: combinedRecipients.map((recipient) => ({
       id: recipient.id,
       role: recipient.role,
@@ -598,8 +659,35 @@ export async function getSendOperation(options: {
       channel: recipient.channel,
       status: recipient.status,
       failureCode: recipient.failureCode,
+      providerType: recipient.providerType,
+      providerResult: recipient.providerResult,
+      providerSubmissionId: recipient.providerSubmissionId,
+      providerErrorCode: recipient.providerErrorCode,
     })),
   }
+}
+
+function normalizeProviderType(value: string | null): 'resend' | 'smtp2go' | null {
+  return value === 'resend' || value === 'smtp2go' ? value : null
+}
+
+function normalizeProviderResult(value: string | null): SendProviderResult | null {
+  if (value === 'accepted' || value === 'not_accepted' || value === 'unknown') return value
+  return null
+}
+
+function normalizeQueueStatus(value: string | undefined): SendQueueStatus {
+  if (
+    value === 'pending' ||
+    value === 'running' ||
+    value === 'retry_wait' ||
+    value === 'needs_attention' ||
+    value === 'succeeded' ||
+    value === 'cancelled'
+  ) {
+    return value
+  }
+  return 'not_created'
 }
 
 async function findReplay(
@@ -1945,16 +2033,88 @@ function backgroundTaskStatement(
     .bind(task.id, taskType, targetType, targetReference, task.digest, priority, maxAttempts, now)
 }
 
-async function wakeTasks(
-  queue: Queue<BackgroundTaskMessage> | undefined,
-  messages: BackgroundTaskMessage[],
-): Promise<void> {
-  if (!queue) return
-  try {
-    for (const message of messages) await queue.send(message)
-  } catch {
-    // D1 中的权威待办仍会由定时任务重新唤醒。
+async function wakeTasks(options: {
+  database: D1Database
+  queue: Queue<BackgroundTaskMessage> | undefined
+  messages: BackgroundTaskMessage[]
+  criticalTaskId: string | null
+  now: number
+}): Promise<void> {
+  if (options.messages.length === 0) return
+  if (!options.queue) {
+    await recordQueueEnqueueFailure(
+      options.database,
+      options.messages,
+      'queue_binding_missing',
+      options.now,
+    )
+    return
   }
+  try {
+    await options.queue.sendBatch(options.messages.map((body) => ({ body })))
+  } catch (error) {
+    const errorName = error instanceof Error ? error.name : 'unknown_error'
+    const criticalMessage = options.criticalTaskId
+      ? options.messages.find((message) => message.taskId === options.criticalTaskId)
+      : undefined
+    let criticalRecovered = false
+    if (criticalMessage) {
+      try {
+        // 批量入队失败时优先补投域外发信任务。相同 taskId 的重复消息会被任务账本安全忽略。
+        await options.queue.send(criticalMessage)
+        criticalRecovered = true
+      } catch {
+        criticalRecovered = false
+      }
+    }
+    const failedMessages = criticalRecovered
+      ? options.messages.filter((message) => message.taskId !== options.criticalTaskId)
+      : options.messages
+    await recordQueueEnqueueFailure(
+      options.database,
+      failedMessages,
+      'queue_enqueue_failed',
+      options.now,
+    )
+    console.error(
+      JSON.stringify({
+        event: 'background_task_enqueue_error',
+        taskCount: options.messages.length,
+        failedTaskCount: failedMessages.length,
+        criticalTaskRecovered: criticalRecovered,
+        errorName,
+      }),
+    )
+  }
+}
+
+async function recordQueueEnqueueFailure(
+  database: D1Database,
+  messages: BackgroundTaskMessage[],
+  errorCode: 'queue_binding_missing' | 'queue_enqueue_failed',
+  now: number,
+): Promise<void> {
+  const statements = messages.map((message) =>
+    database
+      .prepare(
+        `UPDATE background_tasks
+         SET last_error_code = ?1,
+             last_error_summary = ?2,
+             last_error_at = ?3,
+             updated_at = ?3
+         WHERE id = ?4 AND input_version = ?5 AND task_status = 'pending'`,
+      )
+      .bind(
+        errorCode,
+        errorCode === 'queue_binding_missing'
+          ? 'Queue 绑定未配置，任务等待管理员修复'
+          : 'Queue 入队失败，任务等待自动补投',
+        now,
+        message.taskId,
+        message.inputVersion,
+      ),
+  )
+  if (statements.length > 0) await database.batch(statements)
 }
 
 function appendSignature(
